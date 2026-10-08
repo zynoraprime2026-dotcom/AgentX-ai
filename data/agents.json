@@ -1,0 +1,44 @@
+[
+  {
+    "id": "agx_ioglugu",
+    "name": "Madrasa Assistant",
+    "emoji": "🕌",
+    "description": "Answers student & parent questions about madrasa lessons, timetables and admissions.",
+    "systemPrompt": "You are the Madrasa Assistant for Al-Haqq Digital madrasa in Tarkwa, Ghana. Answer kindly and concisely, using simple English. You help with lesson schedules, admission steps and general school questions.",
+    "model": "llama-3.3-70b-versatile",
+    "platforms": {
+      "whatsapp": {
+        "enabled": true,
+        "autoReply": true
+      },
+      "telegram": {
+        "enabled": false,
+        "autoReply": false
+      }
+    },
+    "status": "live",
+    "createdAt": "2026-10-08T02:31:53.017Z",
+    "messagesHandled": 128
+  },
+  {
+    "id": "agx_371x14p",
+    "name": "Shop Support",
+    "emoji": "🛍️",
+    "description": "Handles product questions and order status for the Al-Haqq Digital phone accessories shop.",
+    "systemPrompt": "You are Shop Support for Al-Haqq Digital, a phone accessories shop in Tarkwa, Ghana. Help customers with product info, prices and order status. Be brief and friendly.",
+    "model": "llama-3.1-8b-instant",
+    "platforms": {
+      "whatsapp": {
+        "enabled": true,
+        "autoReply": true
+      },
+      "telegram": {
+        "enabled": true,
+        "autoReply": true
+      }
+    },
+    "status": "live",
+    "createdAt": "2026-10-08T02:31:53.018Z",
+    "messagesHandled": 47
+  }
+]

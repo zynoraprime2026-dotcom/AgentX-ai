@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentX — AI Agent Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">X</span> <b>AgentX</b></div>
+    <nav>
+      <button class="navbtn active" data-view="overview">📊 Overview</button>
+      <button class="navbtn" data-view="agents">🤖 Agents</button>
+      <button class="navbtn" data-view="channels">📡 Channels</button>
+      <button class="navbtn" data-view="settings">⚙️ Settings</button>
+    </nav>
+    <div class="sidebar-foot">
+      <span id="groqBadge" class="badge">…</span>
+      <div class="foot-note">AgentX · Zynora AI</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- OVERVIEW -->
+    <section id="view-overview" class="view">
+      <h1>Overview</h1>
+      <div class="cards" id="statCards"></div>
+      <h2>Live agents</h2>
+      <div id="overviewAgents" class="agent-grid"></div>
+    </section>
+
+    <!-- AGENTS -->
+    <section id="view-agents" class="view hidden">
+      <div class="row-between">
+        <h1>Agents</h1>
+        <button class="btn primary" id="newAgentBtn">+ New agent</button>
+      </div>
+      <div id="agentsList" class="agent-list"></div>
+
+      <div id="editor" class="editor hidden">
+        <h2 id="editorTitle">New agent</h2>
+        <div class="form-grid">
+          <label>Name<input id="fName" maxlength="60" placeholder="Madrasa Assistant"></label>
+          <label>Emoji<input id="fEmoji" value="🤖" maxlength="4"></label>
+          <label class="full">Description<input id="fDesc" maxlength="300" placeholder="What does this agent do?"></label>
+          <label class="full">System prompt<textarea id="fPrompt" rows="4" placeholder="You are a helpful assistant…"></textarea></label>
+          <label>Model
+            <select id="fModel">
+              <option value="llama-3.3-70b-versatile">LLaMA 3.3 70B (versatile)</option>
+              <option value="llama-3.1-8b-instant">LLaMA 3.1 8B (instant)</option>
+              <option value="llama-3.2-3b-preview">LLaMA 3.2 3B (preview)</option>
+            </select>
+          </label>
+          <label>Status
+            <select id="fStatus">
+              <option value="draft">Draft</option>
+              <option value="live">Live</option>
+              <option value="paused">Paused</option>
+            </select>
+          </label>
+        </div>
+        <div class="row-end">
+          <button class="btn" id="cancelEdit">Cancel</button>
+          <button class="btn primary" id="saveAgent">Save agent</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- CHANNELS -->
+    <section id="view-channels" class="view hidden">
+      <h1>Channels</h1>
+      <p class="muted">Toggle which platforms each agent answers on. Connection hooks come next: WhatsApp Cloud API + Telegram Bot API.</p>
+      <div id="channelsList"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="view-settings" class="view hidden">
+      <h1>Settings</h1>
+      <div class="card">
+        <h2>Groq API</h2>
+        <p class="muted">Agents think with Groq-hosted LLaMA models. Paste your API key from console.groq.com — it is stored server-side and never exposed to the browser again.</p>
+        <div class="form-grid">
+          <label class="full">Groq API key<input id="fGroqKey" type="password" placeholder="gsk_..."></label>
+          <label class="full">Public webhook base URL<input id="fWebhookBase" placeholder="https://your-domain.com"></label>
+        </div>
+        <div class="row-end"><button class="btn primary" id="saveSettings">Save settings</button></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- TEST CHAT -->
+<div id="chatDock" class="chat-dock hidden">
+  <div class="chat-head">
+    <span id="chatAgentName">Agent</span>
+    <button class="chat-close" id="chatClose">×</button>
+  </div>
+  <div class="chat-body" id="chatBody"></div>
+  <div class="chat-input">
+    <input id="chatText" placeholder="Test your agent…">
+    <button class="btn primary" id="chatSend">Send</button>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>
