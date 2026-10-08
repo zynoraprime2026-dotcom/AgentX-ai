@@ -17,7 +17,7 @@
       <button class="navbtn" data-view="settings">⚙️ Settings</button>
     </nav>
     <div class="sidebar-foot">
-      <span id="groqBadge" class="badge">…</span>
+      <div><span id="groqBadge" class="badge">…</span> <span id="tgBadge" class="badge">…</span></div>
       <div class="foot-note">AgentX · Zynora AI</div>
     </div>
   </aside>
@@ -72,7 +72,9 @@
     <!-- CHANNELS -->
     <section id="view-channels" class="view hidden">
       <h1>Channels</h1>
-      <p class="muted">Toggle which platforms each agent answers on. Connection hooks come next: WhatsApp Cloud API + Telegram Bot API.</p>
+      <div class="cards" id="healthCards"></div>
+      <h2>Per-agent channels</h2>
+      <p class="muted">Toggle which platforms each agent answers on. WhatsApp and Telegram are live webhook receivers on this server.</p>
       <div id="channelsList"></div>
     </section>
 
@@ -86,7 +88,7 @@
           <label class="full">Groq API key<input id="fGroqKey" type="password" placeholder="gsk_..."></label>
           <label class="full">Public webhook base URL<input id="fWebhookBase" placeholder="https://your-domain.com"></label>
         </div>
-        <div class="row-end"><button class="btn primary" id="saveSettings">Save settings</button></div>
+        <div class="row-between"><button class="btn primary" id="saveSettings">Save settings</button><button class="btn" id="logoutBtn">Log out</button></div>
       </div>
     </section>
   </main>
@@ -104,6 +106,16 @@
     <button class="btn primary" id="chatSend">Send</button>
   </div>
 </div>
+
+<div id="loginOverlay" class="login-overlay hidden">
+      <div class="login-box">
+        <div class="brand"><span class="logo">X</span> <b>AgentX</b></div>
+        <p class="muted">This dashboard is protected. Enter your admin key to manage agents.</p>
+        <input id="loginKey" type="password" placeholder="Admin key" autocomplete="current-password">
+        <button class="btn primary" id="loginBtn" style="margin-top:12px;width:100%">Unlock dashboard</button>
+        <p class="muted" id="loginErr" style="margin-top:8px"></p>
+      </div>
+    </div>
 
 <div id="toast" class="toast hidden"></div>
 <script src="app.js"></script>

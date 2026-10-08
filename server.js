@@ -50,10 +50,44 @@ if (!fs.existsSync(SETTINGS_FILE)) writeJson(SETTINGS_FILE, { groqApiKey: '', we
 // ---------- API ----------
 const api = express.Router();
 
+// ---------- admin auth ----------
+const crypto = require('crypto');
+const ADMIN_KEY = process.env.ADMIN_KEY || '';
+const ADMIN_COOKIE = crypto.createHash('sha256').update('agx' + ADMIN_KEY).digest('hex');
+const PUBLIC_API = ['/status', '/auth/status', '/auth/login', '/auth/logout', '/telegram/status'];
+api.use((req, res, next) => {
+  if (!ADMIN_KEY) return next();
+  if (PUBLIC_API.includes(req.path)) return next();
+  if ((req.headers.cookie || '').includes('agx_auth=' + ADMIN_COOKIE)) return next();
+  res.status(401).json({ error: 'login required', needsLogin: true });
+});
+
+api.get('/auth/status', (req, res) => res.json({
+  needsLogin: Boolean(ADMIN_KEY),
+  authed: !ADMIN_KEY || (req.headers.cookie || '').includes('agx_auth=' + ADMIN_COOKIE)
+}));
+api.post('/auth/login', (req, res) => {
+  if (!ADMIN_KEY) return res.json({ ok: true, authed: true });
+  if ((req.body && req.body.key) !== ADMIN_KEY) return res.status(401).json({ error: 'wrong key' });
+  res.setHeader('Set-Cookie', 'agx_auth=' + ADMIN_COOKIE + '; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax');
+  res.json({ ok: true, authed: true });
+});
+api.post('/auth/logout', (req, res) => {
+  res.setHeader('Set-Cookie', 'agx_auth=; Path=/; HttpOnly; Max-Age=0');
+  res.json({ ok: true });
+});
+
 api.get('/status', (req, res) => {
   const s = readJson(SETTINGS_FILE, {});
   const cfg = Boolean((s.groqApiKey && s.groqApiKey.startsWith('gsk_')) || (process.env.GROQ_API_KEY || '').startsWith('gsk_'));
-  res.json({ ok: true, groqConfigured: cfg });
+  res.json({
+    ok: true,
+    groqConfigured: cfg,
+    telegramConnected: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+    whatsappConnected: Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN),
+    ilmConnected: Boolean(process.env.ILM_API_KEY),
+    adminAuth: Boolean(process.env.ADMIN_KEY)
+  });
 });
 
 api.get('/settings', (req, res) => res.json(readJson(SETTINGS_FILE, {})));

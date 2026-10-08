@@ -12,6 +12,7 @@ async function api(path, opts = {}) {
     ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined
   });
   const d = await r.json().catch(() => ({}));
+  if (r.status === 401) { showLogin(); throw new Error('login required'); }
   if (!r.ok) throw new Error(d.error || r.status);
   return d;
 }
@@ -25,12 +26,31 @@ function pill(status) {
   return `<span class="pill ${status === 'live' ? 'live' : ''} ${status === 'paused' ? 'paused' : ''}">${status}</span>`;
 }
 
+// ---------- auth ----------
+function showLogin() {
+  $('#loginOverlay').classList.remove('hidden');
+  $('#loginErr').textContent = '';
+}
+$('#loginBtn').onclick = async () => {
+  try {
+    await api('/auth/login', { method: 'POST', body: { key: $('#loginKey').value } });
+    $('#loginOverlay').classList.add('hidden'); $('#loginKey').value = '';
+    await load(); toast('Welcome back');
+  } catch (e) { $('#loginErr').textContent = 'Wrong key, try again.'; }
+};
+$('#loginKey').onkeydown = (e) => { if (e.key === 'Enter') $('#loginBtn').click(); };
+$('#logoutBtn').onclick = async () => {
+  try { await api('/auth/logout', { method: 'POST' }); } catch (e) {}
+  location.reload();
+};
+
 // ---------- navigation ----------
 $$('.navbtn').forEach(b => b.onclick = () => {
   $$('.navbtn').forEach(x => x.classList.remove('active'));
   b.classList.add('active');
   $$('.view').forEach(v => v.classList.add('hidden'));
   $('#view-' + b.dataset.view).classList.remove('hidden');
+  if (b.dataset.view === 'channels') renderHealth();
 });
 
 // ---------- overview ----------
@@ -44,6 +64,13 @@ function renderOverview() {
     <div class="card"><div class="num" style="color:var(--green)">${live}</div><div class="lbl">Live now</div></div>
     <div class="card"><div class="num">${msgs}</div><div class="lbl">Messages handled</div></div>
     <div class="card"><div class="num">${wa} <small>WA</small> · ${tg} <small>TG</small></div><div class="lbl">Channels enabled</div></div>`;
+  fetch('/api/broadcast/subscribers').then(r => r.json()).then(subs => {
+    const n = Object.keys(subs || {}).length;
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `<div class="num">${n}</div><div class="lbl">Fajr subscribers</div>`;
+    $('#statCards').appendChild(el);
+  }).catch(() => {});
   $('#overviewAgents').innerHTML = agents.filter(a => a.status === 'live').map(a => `
     <div class="agent-card">
       <div class="top"><span class="emoji">${a.emoji}</span><span class="name">${esc(a.name)}</span>${pill(a.status)}</div>
@@ -169,8 +196,24 @@ $('#saveSettings').onclick = async () => {
 async function refreshStatus() {
   const s = await api('/status');
   const b = $('#groqBadge');
-  b.textContent = s.groqConfigured ? 'Groq: connected' : 'Groq: not configured';
+  b.textContent = s.groqConfigured ? 'Groq ✓' : 'Groq: off';
   b.classList.toggle('on', s.groqConfigured);
+  const t = $('#tgBadge');
+  t.textContent = s.telegramConnected ? 'Telegram ✓' : 'Telegram: off';
+  t.classList.toggle('on', s.telegramConnected);
+  health = s;
+  if (!$('#view-channels').classList.contains('hidden')) renderHealth();
+}
+
+let health = null;
+function renderHealth() {
+  if (!health) return;
+  const item = (name, ok, note) => `<div class="card"><div style="margin-bottom:8px"><span class="status-dot ${ok ? 'on' : 'off'}"></span><b>${name}</b></div><div class="lbl muted" style="font-size:12px">${note}</div></div>`;
+  $('#healthCards').innerHTML =
+    item('Groq (LLM brain)', health.groqConfigured, health.groqConfigured ? 'Agents think via Groq' : 'Add key in Settings') +
+    item('Telegram', health.telegramConnected, health.telegramConnected ? '@AgentXtechbot webhook live' : 'Not configured') +
+    item('WhatsApp', health.whatsappConnected, health.whatsappConnected ? 'Cloud API ready' : 'Needs Meta credentials') +
+    item('Ilm API tools', health.ilmConnected, health.ilmConnected ? 'Prayer times, Quran, hadith live' : 'No Ilm key');
 }
 
 async function load() {
@@ -180,5 +223,11 @@ async function load() {
 
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-load().catch(e => toast(e.message));
-refreshStatus();
+(async () => {
+  try {
+    const st = await api('/auth/status');
+    if (st.needsLogin && !st.authed) showLogin();
+    else { await load(); }
+  } catch (e) { toast(e.message); await load(); }
+  refreshStatus();
+})();
