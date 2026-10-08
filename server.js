@@ -104,41 +104,132 @@ api.delete('/agents/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// test chat console — Groq if key configured, canned demo otherwise
+// ---------- shared Groq call ----------
+async function groqAsk(agent, history) {
+  const st = readJson(SETTINGS_FILE, {});
+  const key = (st.groqApiKey && st.groqApiKey.startsWith('gsk_')) ? st.groqApiKey : (process.env.GROQ_API_KEY || '');
+  if (!key.startsWith('gsk_')) {
+    const last = history.length ? history[history.length - 1].content : '';
+    return { reply: `*[demo mode — add a Groq API key in Settings to go live]*\n\n${agent.name} here. You said: "${(last || '').slice(0, 120)}".`, demo: true };
+  }
+  const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: agent.model,
+      messages: [{ role: 'system', content: agent.systemPrompt }, ...history],
+      temperature: 0.7, max_tokens: 512
+    })
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error((d.error && d.error.message) || 'Groq request failed');
+  return { reply: d.choices[0].message.content, model: agent.model };
+}
+
+function bumpMessages(agentId) {
+  const agents = readJson(AGENTS_FILE, []);
+  const a = agents.find(x => x.id === agentId);
+  if (a) { a.messagesHandled = (a.messagesHandled || 0) + 1; writeJson(AGENTS_FILE, agents); }
+}
+
+// test chat console — same path the Telegram webhook uses
 api.post('/chat/:id', async (req, res) => {
   const agents = readJson(AGENTS_FILE, []);
   const a = agents.find(x => x.id === req.params.id);
   if (!a) return res.status(404).json({ error: 'agent not found' });
   const history = Array.isArray(req.body.history) ? req.body.history.slice(-12) : [];
-  const s = readJson(SETTINGS_FILE, {});
-  const key = (s.groqApiKey && s.groqApiKey.startsWith('gsk_')) ? s.groqApiKey : (process.env.GROQ_API_KEY || '');
-  if (!key.startsWith('gsk_')) {
-    const last = history.length ? history[history.length - 1].content : '';
-    return res.json({
-      reply: `*[demo mode — add a Groq API key in Settings to go live]*\n\n${a.name} here. You said: "${(last || '').slice(0, 120)}". Configure a Groq key and I'll answer with ${a.model}.`,
-      demo: true
-    });
-  }
   try {
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: a.model,
-        messages: [{ role: 'system', content: a.systemPrompt }, ...history],
-        temperature: 0.7, max_tokens: 512
-      })
-    });
-    const d = await r.json();
-    if (!r.ok) return res.status(502).json({ error: (d.error && d.error.message) || 'Groq request failed' });
-    a.messagesHandled = (a.messagesHandled || 0) + 1;
-    writeJson(AGENTS_FILE, agents);
-    res.json({ reply: d.choices[0].message.content, model: a.model });
-  } catch (e) {
-    res.status(502).json({ error: 'Groq unreachable: ' + e.message });
-  }
+    const out = await groqAsk(a, history);
+    if (!out.demo) bumpMessages(a.id);
+    res.json(out);
+  } catch (e) { res.status(502).json({ error: e.message }); }
 });
+
+// ---------- Telegram webhook ----------
+const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TG_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || '';
+const tgHistories = new Map();   // chatId -> last 12 messages
+const tgSelected = new Map();   // chatId -> agent id chosen via /agent
+
+function pickAgent(agents, chatId) {
+  const chosenId = tgSelected.get(chatId);
+  if (chosenId) {
+    const chosen = agents.find(a => a.id === chosenId);
+    if (chosen && chosen.status === 'live') return chosen;
+  }
+  return agents.find(a => a.platforms && a.platforms.telegram && a.platforms.telegram.enabled && a.platforms.telegram.autoReply && a.status === 'live')
+      || agents.find(a => a.platforms && a.platforms.telegram && a.platforms.telegram.enabled && a.status === 'live')
+      || null;
+}
+
+async function tgSend(chatId, text) {
+  const chunks = String(text).match(/[\s\S]{1,3800}(?!\S)/) || [String(text)];
+  for (const c of chunks) {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: c })
+    });
+  }
+}
+
+async function handleTgMessage(msg) {
+  const chatId = msg.chat && msg.chat.id;
+  const text = (msg.text || '').trim();
+  if (!chatId || !text) return;
+  const agents = readJson(AGENTS_FILE, []);
+
+  if (text.startsWith('/')) {
+    const cmd = text.split(/\s+/)[0].split('@')[0].toLowerCase();
+    const arg = text.split(/\s+/).slice(1).join(' ').trim();
+    if (cmd === '/start' || cmd === '/help') {
+      return tgSend(chatId,
+        '👋 Welcome to AgentX!\n\nI am an AI assistant running on Groq.\n' +
+        'Commands:\n/agents — list available assistants\n/agent <name> — talk to a specific one\n\nJust type your question.');
+    }
+    if (cmd === '/agents') {
+      const live = agents.filter(a => a.status === 'live');
+      return tgSend(chatId, live.length
+        ? 'Available assistants:\n' + live.map(a => `${a.emoji} ${a.name}`).join('\n')
+        : 'No live agents yet — set one live in the dashboard.');
+    }
+    if (cmd === '/agent' && arg) {
+      const found = agents.find(a => a.name.toLowerCase() === arg.toLowerCase());
+      if (found && found.status === 'live') {
+        tgSelected.set(chatId, found.id); tgHistories.delete(chatId);
+        return tgSend(chatId, `${found.emoji} You are now talking to ${found.name}.`);
+      }
+      return tgSend(chatId, `No live agent named "${arg}". Use /agents to list them.`);
+    }
+  }
+
+  const agent = pickAgent(agents, chatId);
+  if (!agent) return; // no live telegram-enabled agent: stay silent
+  try {
+    const history = [...(tgHistories.get(chatId) || []), { role: 'user', content: text }].slice(-12);
+    const out = await groqAsk(agent, history);
+    if (out.demo) return; // never send demo noise to Telegram
+    bumpMessages(agent.id);
+    tgHistories.set(chatId, [...history, { role: 'assistant', content: out.reply }].slice(-12));
+    await tgSend(chatId, out.reply);
+  } catch (e) {
+    await tgSend(chatId, 'Sorry, I could not answer right now. Please try again.');
+  }
+}
+
+app.post('/webhook/telegram', (req, res) => {
+  if (TG_SECRET && req.get('x-telegram-bot-api-secret-token') !== TG_SECRET) return res.status(401).end();
+  const upd = req.body || {};
+  const msg = upd.message || upd.edited_message;
+  if (msg && msg.text) handleTgMessage(msg).catch(() => {});
+  res.json({ ok: true });
+});
+
+api.get('/telegram/status', (req, res) => res.json({
+  tokenConfigured: Boolean(TG_TOKEN),
+  selectionEnabled: tgSelected.size > 0
+}));
 
 app.use('/api', api);
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.listen(PORT, () => console.log(`AgentX dashboard running on http://localhost:${PORT}`));
+
+app.listen(PORT, () => console.log('AgentX dashboard running on http://localhost:' + PORT));
