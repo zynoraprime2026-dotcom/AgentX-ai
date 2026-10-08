@@ -31,14 +31,27 @@ function showLogin() {
   $('#loginOverlay').classList.remove('hidden');
   $('#loginErr').textContent = '';
 }
+$$('.logintab').forEach(t => t.onclick = () => {
+  $$('.logintab').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  $('#signinForm').style.display = t.dataset.tab === 'signin' ? 'flex' : 'none';
+  $('#signupForm').style.display = t.dataset.tab === 'signup' ? 'flex' : 'none';
+});
 $('#loginBtn').onclick = async () => {
   try {
-    await api('/auth/login', { method: 'POST', body: { key: $('#loginKey').value } });
-    $('#loginOverlay').classList.add('hidden'); $('#loginKey').value = '';
-    await load(); toast('Welcome back');
-  } catch (e) { $('#loginErr').textContent = 'Wrong key, try again.'; }
+    await api('/auth/login', { method: 'POST', body: { email: $('#loginEmail').value, password: $('#loginPass').value } });
+    location.reload();
+  } catch (e) { $('#loginErr').textContent = e.message; }
 };
-$('#loginKey').onkeydown = (e) => { if (e.key === 'Enter') $('#loginBtn').click(); };
+$('#registerBtn').onclick = async () => {
+  try {
+    await api('/auth/register', { method: 'POST', body: {
+      name: $('#regName').value.trim(), email: $('#regEmail').value.trim(),
+      password: $('#regPass').value, founderKey: $('#regKey').value.trim()
+    } });
+    location.reload();
+  } catch (e) { $('#loginErr').textContent = e.message; }
+};
 $('#logoutBtn').onclick = async () => {
   try { await api('/auth/logout', { method: 'POST' }); } catch (e) {}
   location.reload();
@@ -226,8 +239,10 @@ function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&
 (async () => {
   try {
     const st = await api('/auth/status');
-    if (st.needsLogin && !st.authed) showLogin();
-    else { await load(); }
-  } catch (e) { toast(e.message); await load(); }
+    if (st.authed && st.user) {
+      $('#whoami').textContent = (st.user.founder ? '★ ' : '') + st.user.name + ' · ' + st.user.email;
+      await load();
+    } else showLogin();
+  } catch (e) { toast(e.message); }
   refreshStatus();
 })();

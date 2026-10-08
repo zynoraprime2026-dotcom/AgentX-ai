@@ -87,3 +87,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
   .brand { padding: 14px 16px; }
   .navbtn { padding: 8px 10px; font-size: 14px; }
 }
+
+.login-tabs { display: flex; gap: 6px; margin-bottom: 6px; }
+.logintab { flex: 1; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); padding: 8px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.logintab.active { color: var(--text); border-color: var(--accent); }

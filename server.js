@@ -50,30 +50,85 @@ if (!fs.existsSync(SETTINGS_FILE)) writeJson(SETTINGS_FILE, { groqApiKey: '', we
 // ---------- API ----------
 const api = express.Router();
 
-// ---------- admin auth ----------
+// ---------- multi-tenant accounts ----------
 const crypto = require('crypto');
-const ADMIN_KEY = process.env.ADMIN_KEY || '';
-const ADMIN_COOKIE = crypto.createHash('sha256').update('agx' + ADMIN_KEY).digest('hex');
-const PUBLIC_API = ['/status', '/auth/status', '/auth/login', '/auth/logout', '/telegram/status'];
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/telegram/status'];
+
+function hashPassword(pw, salt) {
+  salt = salt || crypto.randomBytes(12).toString('hex');
+  const h = crypto.scryptSync(String(pw), salt, 32).toString('hex');
+  return salt + ':' + h;
+}
+function checkPassword(pw, stored) {
+  const [salt, h] = String(stored || '').split(':');
+  if (!salt || !h) return false;
+  return crypto.timingSafeEqual(Buffer.from(h, 'hex'), crypto.scryptSync(String(pw), salt, 32));
+}
+
+function getSessions() { return readJson(SESSIONS_FILE, {}); }
+function saveSessions(sess) { writeJson(SESSIONS_FILE, sess); }
+
 api.use((req, res, next) => {
-  if (!ADMIN_KEY) return next();
   if (PUBLIC_API.includes(req.path)) return next();
-  if ((req.headers.cookie || '').includes('agx_auth=' + ADMIN_COOKIE)) return next();
-  res.status(401).json({ error: 'login required', needsLogin: true });
+  const m = /agx_sess=([a-f0-9]+)/.exec(req.headers.cookie || '');
+  const sess = getSessions()[m && m[1]];
+  if (!sess || new Date(sess.expires) < new Date()) return res.status(401).json({ error: 'login required' });
+  req.sessionToken = m[1]; req.user = sess.user;
+  next();
 });
 
-api.get('/auth/status', (req, res) => res.json({
-  needsLogin: Boolean(ADMIN_KEY),
-  authed: !ADMIN_KEY || (req.headers.cookie || '').includes('agx_auth=' + ADMIN_COOKIE)
-}));
-api.post('/auth/login', (req, res) => {
-  if (!ADMIN_KEY) return res.json({ ok: true, authed: true });
-  if ((req.body && req.body.key) !== ADMIN_KEY) return res.status(401).json({ error: 'wrong key' });
-  res.setHeader('Set-Cookie', 'agx_auth=' + ADMIN_COOKIE + '; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax');
-  res.json({ ok: true, authed: true });
+api.get('/auth/status', (req, res) => {
+  const m = /agx_sess=([a-f0-9]+)/.exec(req.headers.cookie || '');
+  const sess = getSessions()[m && m[1]];
+  const authed = Boolean(sess && new Date(sess.expires) > new Date());
+  res.json({ needsLogin: true, authed, user: authed ? sess.user : null });
 });
+
+api.post('/auth/register', (req, res) => {
+  const { email, password, name, founderKey } = req.body || {};
+  const em = String(email || '').trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) return res.status(400).json({ error: 'valid email required' });
+  if (String(password || '').length < 6) return res.status(400).json({ error: 'password must be at least 6 characters' });
+  const users = readJson(USERS_FILE, {});
+  if (Object.values(users).some(u => u.email === em)) return res.status(409).json({ error: 'that email is already registered' });
+  const isFounder = Boolean(process.env.ADMIN_KEY && founderKey === process.env.ADMIN_KEY);
+  const id = 'u_' + crypto.randomBytes(5).toString('hex');
+  users[id] = { id, email: em, name: String(name || em.split('@')[0]).slice(0, 40), founder: isFounder, pass: hashPassword(password), createdAt: new Date().toISOString() };
+  writeJson(USERS_FILE, users);
+  if (isFounder) {
+    const agents = readJson(AGENTS_FILE, []);
+    let claimed = 0;
+    for (const a of agents) if (!a.ownerId) { a.ownerId = id; claimed++; }
+    writeJson(AGENTS_FILE, agents);
+  }
+  const token = crypto.randomBytes(24).toString('hex');
+  const sess = getSessions();
+  sess[token] = { user: { id, email: em, name: users[id].name, founder: isFounder }, expires: new Date(Date.now() + 30 * 864e5).toISOString() };
+  saveSessions(sess);
+  res.setHeader('Set-Cookie', 'agx_sess=' + token + '; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax');
+  res.json({ ok: true, user: sess[token].user });
+});
+
+api.post('/auth/login', (req, res) => {
+  const { email, password } = req.body || {};
+  const em = String(email || '').trim().toLowerCase();
+  const users = readJson(USERS_FILE, {});
+  const u = Object.values(users).find(x => x.email === em);
+  if (!u || !checkPassword(password, u.pass)) return res.status(401).json({ error: 'wrong email or password' });
+  const token = crypto.randomBytes(24).toString('hex');
+  const sess = getSessions();
+  sess[token] = { user: { id: u.id, email: u.email, name: u.name, founder: Boolean(u.founder) }, expires: new Date(Date.now() + 30 * 864e5).toISOString() };
+  saveSessions(sess);
+  res.setHeader('Set-Cookie', 'agx_sess=' + token + '; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax');
+  res.json({ ok: true, user: sess[token].user });
+});
+
 api.post('/auth/logout', (req, res) => {
-  res.setHeader('Set-Cookie', 'agx_auth=; Path=/; HttpOnly; Max-Age=0');
+  const m = /agx_sess=([a-f0-9]+)/.exec(req.headers.cookie || '');
+  if (m) { const sess = getSessions(); delete sess[m[1]]; saveSessions(sess); }
+  res.setHeader('Set-Cookie', 'agx_sess=; Path=/; HttpOnly; Max-Age=0');
   res.json({ ok: true });
 });
 
@@ -90,8 +145,12 @@ api.get('/status', (req, res) => {
   });
 });
 
-api.get('/settings', (req, res) => res.json(readJson(SETTINGS_FILE, {})));
+api.get('/settings', (req, res) => {
+  if (!req.user.founder) return res.json({ readOnly: true });
+  res.json(readJson(SETTINGS_FILE, {}));
+});
 api.put('/settings', (req, res) => {
+  if (!req.user.founder) return res.status(403).json({ error: 'settings are managed by the founder' });
   const s = readJson(SETTINGS_FILE, {});
   const { groqApiKey, webhookBase } = req.body || {};
   if (typeof groqApiKey === 'string') s.groqApiKey = groqApiKey.trim();
@@ -101,7 +160,7 @@ api.put('/settings', (req, res) => {
   res.json({ ok: true, groqConfigured: cfg });
 });
 
-api.get('/agents', (req, res) => res.json(readJson(AGENTS_FILE, [])));
+api.get('/agents', (req, res) => res.json(readJson(AGENTS_FILE, []).filter(a => a.ownerId === req.user.id)));
 
 api.post('/agents', (req, res) => {
   const { name, emoji, description, systemPrompt, model } = req.body || {};
@@ -113,7 +172,7 @@ api.post('/agents', (req, res) => {
     systemPrompt: String(systemPrompt || 'You are a helpful assistant.').slice(0, 4000),
     model: model || 'openai/gpt-oss-120b',
     platforms: { whatsapp: { enabled: false, autoReply: true }, telegram: { enabled: false, autoReply: true } },
-    status: 'draft', createdAt: new Date().toISOString(), messagesHandled: 0
+    status: 'draft', createdAt: new Date().toISOString(), messagesHandled: 0, ownerId: req.user.id
   };
   agents.push(agent); writeJson(AGENTS_FILE, agents);
   res.status(201).json(agent);
@@ -121,7 +180,7 @@ api.post('/agents', (req, res) => {
 
 api.put('/agents/:id', (req, res) => {
   const agents = readJson(AGENTS_FILE, []);
-  const a = agents.find(x => x.id === req.params.id);
+  const a = agents.find(x => x.id === req.params.id && x.ownerId === req.user.id);
   if (!a) return res.status(404).json({ error: 'agent not found' });
   const allowed = ['name','emoji','description','systemPrompt','model','status','platforms'];
   for (const k of allowed) if (req.body && k in req.body) a[k] = req.body[k];
@@ -132,7 +191,7 @@ api.put('/agents/:id', (req, res) => {
 api.delete('/agents/:id', (req, res) => {
   let agents = readJson(AGENTS_FILE, []);
   const before = agents.length;
-  agents = agents.filter(x => x.id !== req.params.id);
+  agents = agents.filter(x => x.id !== req.params.id && x.ownerId === req.user.id);
   if (agents.length === before) return res.status(404).json({ error: 'agent not found' });
   writeJson(AGENTS_FILE, agents);
   res.json({ ok: true });
@@ -307,6 +366,8 @@ function bumpMessages(agentId) {
 
 // test chat console — same path the Telegram webhook uses
 api.post('/chat/:id', async (req, res) => {
+  const owned = readJson(AGENTS_FILE, []).find(x => x.id === req.params.id && x.ownerId === req.user.id);
+  if (!owned) return res.status(404).json({ error: 'agent not found' });
   const agents = readJson(AGENTS_FILE, []);
   const a = agents.find(x => x.id === req.params.id);
   if (!a) return res.status(404).json({ error: 'agent not found' });

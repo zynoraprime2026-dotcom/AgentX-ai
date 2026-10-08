@@ -17,6 +17,7 @@
       <button class="navbtn" data-view="settings">⚙️ Settings</button>
     </nav>
     <div class="sidebar-foot">
+      <div id="whoami" class="muted" style="margin-bottom:8px"></div>
       <div><span id="groqBadge" class="badge">…</span> <span id="tgBadge" class="badge">…</span></div>
       <div class="foot-note">AgentX · Zynora AI</div>
     </div>
@@ -110,9 +111,22 @@
 <div id="loginOverlay" class="login-overlay hidden">
       <div class="login-box">
         <div class="brand"><span class="logo">X</span> <b>AgentX</b></div>
-        <p class="muted">This dashboard is protected. Enter your admin key to manage agents.</p>
-        <input id="loginKey" type="password" placeholder="Admin key" autocomplete="current-password">
-        <button class="btn primary" id="loginBtn" style="margin-top:12px;width:100%">Unlock dashboard</button>
+        <div class="login-tabs">
+          <button class="logintab active" data-tab="signin">Sign in</button>
+          <button class="logintab" data-tab="signup">Create account</button>
+        </div>
+        <div id="signinForm" style="display:flex;flex-direction:column;gap:10px">
+          <input id="loginEmail" type="email" placeholder="Email" autocomplete="email">
+          <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password">
+          <button class="btn primary" id="loginBtn">Sign in</button>
+        </div>
+        <div id="signupForm" style="display:none;flex-direction:column;gap:10px">
+          <input id="regName" placeholder="Your name">
+          <input id="regEmail" type="email" placeholder="Email" autocomplete="email">
+          <input id="regPass" type="password" placeholder="Password (min 6 chars)" autocomplete="new-password">
+          <input id="regKey" placeholder="Founder key (optional)" autocomplete="off">
+          <button class="btn primary" id="registerBtn">Create my account</button>
+        </div>
         <p class="muted" id="loginErr" style="margin-top:8px"></p>
       </div>
     </div>
