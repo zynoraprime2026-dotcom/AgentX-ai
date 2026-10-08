@@ -32,7 +32,7 @@ if (!fs.existsSync(AGENTS_FILE)) {
       description: 'Answers student & parent questions about madrasa lessons, timetables and admissions.',
       systemPrompt: 'You are the Madrasa Assistant for Al-Haqq Digital madrasa in Tarkwa, Ghana. Answer kindly and concisely, using simple English. You help with lesson schedules, admission steps and general school questions.',
       model: 'openai/gpt-oss-120b',
-      platforms: { whatsapp: { enabled: true, autoReply: true }, telegram: { enabled: false, autoReply: false } },
+      platforms: { whatsapp: { enabled: true, autoReply: true }, telegram: { enabled: true, autoReply: true } },
       status: 'live', createdAt: new Date().toISOString(), messagesHandled: 128
     },
     {
