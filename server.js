@@ -30,7 +30,7 @@ if (!fs.existsSync(AGENTS_FILE)) {
     {
       id: uid(), name: 'Madrasa Assistant', emoji: '🕌',
       description: 'Answers student & parent questions about madrasa lessons, timetables and admissions.',
-      systemPrompt: 'You are the Madrasa Assistant for Al-Haqq Digital madrasa in Tarkwa, Ghana. Answer kindly and concisely, using simple English. You help with lesson schedules, admission steps and general school questions.',
+      systemPrompt: 'You are the Madrasa Assistant for Al-Haqq Digital madrasa in Tarkwa, Ghana. Answer kindly and concisely, using simple English. You help with lesson schedules, admission steps and general school questions. When asked about prayer times, Quran verses, hadith, duas or fiqh, use your tools to fetch live accurate data rather than answering from memory.',
       model: 'openai/gpt-oss-120b',
       platforms: { whatsapp: { enabled: true, autoReply: true }, telegram: { enabled: true, autoReply: true } },
       status: 'live', createdAt: new Date().toISOString(), messagesHandled: 128
@@ -104,7 +104,131 @@ api.delete('/agents/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- Ilm API tools (function calling) ----------
+const ILM_API_URL = (process.env.ILM_API_URL || 'https://ilm-api.vercel.app').replace(/\/$/, '');
+const ILM_API_KEY = process.env.ILM_API_KEY || '';
+
+async function ilmCall(pathname, params) {
+  const qs = params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')) : '';
+  const r = await fetch(ILM_API_URL + pathname + qs, { headers: { 'x-api-key': ILM_API_KEY } });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('Ilm API error: ' + JSON.stringify(d).slice(0, 200));
+  const str = typeof d === 'string' ? d : JSON.stringify(d);
+  return str.length > 2200 ? str.slice(0, 2200) + '…[truncated]' : str;
+}
+
+const TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_prayer_times',
+      description: 'Get Islamic prayer times (Fajr, Dhuhr, Asr, Maghrib, Isha) for a city. Use for any question about salat/salah times.',
+      parameters: {
+        type: 'object',
+        properties: {
+          city: { type: 'string', description: 'City name, e.g. Tarkwa, Accra, Kumasi, Makkah' },
+          date: { type: 'string', description: 'Optional date YYYY-MM-DD' }
+        },
+        required: ['city']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_quran_ayah',
+      description: 'Get a Quran verse with Arabic text and translation. Use when the user quotes, references or asks about a specific verse.',
+      parameters: {
+        type: 'object',
+        properties: {
+          surah: { type: 'integer', description: 'Surah number 1-114' },
+          ayah: { type: 'integer', description: 'Ayah number within the surah' },
+          translation: { type: 'string', description: 'Optional translation key, e.g. en.sahih, ur.jalandhari, fr.hamidullah' }
+        },
+        required: ['surah', 'ayah']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_hadith',
+      description: 'Search hadith collections (Bukhari, Muslim, Tirmidhi, Nasai, Abu Dawud, Ibn Majah) by keyword. Use when the user asks about a hadith on a topic.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search keywords, e.g. intention, patience' },
+          collection: { type: 'string', description: 'Optional collection slug, e.g. bukhari, muslim' },
+          language: { type: 'string', description: 'Optional 2-letter language code, e.g. en, ar, fr' }
+        },
+        required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_dictionary',
+      description: 'Look up an Arabic word or English meaning in the Islamic dictionary, or get all words from an Arabic root (3 letters).',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Arabic word, English meaning, or 3-letter root like ص-ب-ر' },
+          mode: { type: 'string', enum: ['search', 'root'], description: '"root" to look up all words from an Arabic root' }
+        },
+        required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_dua',
+      description: 'Get duas (supplications). Use when the user asks for a dua on a topic like morning, distress, forgiveness, or a random one.',
+      parameters: {
+        type: 'object',
+        properties: {
+          search: { type: 'string', description: 'Topic keywords to search, e.g. morning, distress, forgiveness' },
+          random: { type: 'boolean', description: 'True for a random dua' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_fiqh_ruling',
+      description: 'Get comparative fiqh rulings across the 4 madhabs on a topic, e.g. wudu, fasting, zakat.',
+      parameters: {
+        type: 'object',
+        properties: {
+          topic: { type: 'string', description: 'The fiqh topic, e.g. wudu, tayammum' }
+        },
+        required: ['topic']
+      }
+    }
+  }
+];
+
+async function runTool(name, args) {
+  try {
+    switch (name) {
+      case 'get_prayer_times': return await ilmCall('/v1/prayer-times', { city: args.city, date: args.date, method: 'MuslimWorldLeague' });
+      case 'get_quran_ayah': return await ilmCall(`/v1/quran/${args.surah}/${args.ayah}`, { translation: args.translation });
+      case 'search_hadith': return await ilmCall('/v1/hadith/search', { q: args.query, collection: args.collection, language: args.language, limit: 5 });
+      case 'search_dictionary':
+        return args.mode === 'root'
+          ? await ilmCall('/v1/dictionary/root/' + encodeURIComponent(args.query))
+          : await ilmCall('/v1/dictionary/search', { q: args.query });
+      case 'get_dua': return args.search ? await ilmCall('/v1/duas/search', { q: args.search }) : await ilmCall('/v1/duas/random');
+      case 'get_fiqh_ruling': return await ilmCall('/v1/fiqh/search', { topic: args.topic });
+      default: return 'Unknown tool';
+    }
+  } catch (e) { return 'Tool error: ' + e.message; }
+}
+
 // ---------- shared Groq call ----------
+
 async function groqAsk(agent, history) {
   const st = readJson(SETTINGS_FILE, {});
   const key = (st.groqApiKey && st.groqApiKey.startsWith('gsk_')) ? st.groqApiKey : (process.env.GROQ_API_KEY || '');
@@ -112,18 +236,33 @@ async function groqAsk(agent, history) {
     const last = history.length ? history[history.length - 1].content : '';
     return { reply: `*[demo mode — add a Groq API key in Settings to go live]*\n\n${agent.name} here. You said: "${(last || '').slice(0, 120)}".`, demo: true };
   }
-  const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: agent.model,
-      messages: [{ role: 'system', content: agent.systemPrompt }, ...history],
-      temperature: 0.7, max_tokens: 512
-    })
-  });
-  const d = await r.json();
-  if (!r.ok) throw new Error((d.error && d.error.message) || 'Groq request failed');
-  return { reply: d.choices[0].message.content, model: agent.model };
+  const messages = [{ role: 'system', content: agent.systemPrompt }, ...history];
+  for (let round = 0; round < 4; round++) {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: agent.model,
+        messages,
+        tools: ILM_API_KEY ? TOOLS : undefined,
+        tool_choice: ILM_API_KEY ? 'auto' : undefined,
+        temperature: 0.7, max_tokens: 800
+      })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || 'Groq request failed');
+    const msg = d.choices[0].message;
+    const calls = msg.tool_calls || [];
+    if (!calls.length) return { reply: msg.content, model: agent.model };
+    messages.push(msg);
+    for (const c of calls) {
+      let args = {};
+      try { args = JSON.parse(c.function.arguments || '{}'); } catch {}
+      const result = await runTool(c.function.name, args);
+      messages.push({ role: 'tool', tool_call_id: c.id, content: result });
+    }
+  }
+  return { reply: 'I got carried away checking references — please ask again.', model: agent.model };
 }
 
 function bumpMessages(agentId) {
@@ -148,7 +287,9 @@ api.post('/chat/:id', async (req, res) => {
 // ---------- Telegram webhook ----------
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || '';
-const tgHistories = new Map();   // chatId -> last 12 messages
+const TG_HISTORY_FILE = path.join(DATA_DIR, 'tg_history.json');
+const tgHistories = new Map(readJson(TG_HISTORY_FILE, []));   // chatId -> last 12 messages
+function saveTgHistory() { writeJson(TG_HISTORY_FILE, Array.from(tgHistories.entries())); }
 const tgSelected = new Map();   // chatId -> agent id chosen via /agent
 
 function pickAgent(agents, chatId) {
@@ -162,8 +303,15 @@ function pickAgent(agents, chatId) {
       || null;
 }
 
+function tgFormat(text) {
+  return String(text)
+    .replace(/\*\*(.+?)\*\*/g, '*$1*')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^[-*]\s+/gm, '• ');
+}
+
 async function tgSend(chatId, text) {
-  const chunks = String(text).match(/[\s\S]{1,3800}(?!\S)/) || [String(text)];
+  const chunks = tgFormat(text).match(/[\s\S]{1,3800}(?!\S)/) || [tgFormat(text)];
   for (const c of chunks) {
     await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -183,7 +331,7 @@ async function handleTgMessage(msg) {
     const arg = text.split(/\s+/).slice(1).join(' ').trim();
     if (cmd === '/start' || cmd === '/help') {
       return tgSend(chatId,
-        '👋 Welcome to AgentX!\n\nI am an AI assistant running on Groq.\n' +
+        '👋 Welcome to AgentX!\n\nI am an AI assistant running on Groq with live access to prayer times, Quran, hadith, duas and more.\n' +
         'Commands:\n/agents — list available assistants\n/agent <name> — talk to a specific one\n\nJust type your question.');
     }
     if (cmd === '/agents') {
@@ -195,7 +343,7 @@ async function handleTgMessage(msg) {
     if (cmd === '/agent' && arg) {
       const found = agents.find(a => a.name.toLowerCase() === arg.toLowerCase());
       if (found && found.status === 'live') {
-        tgSelected.set(chatId, found.id); tgHistories.delete(chatId);
+        tgSelected.set(chatId, found.id); tgHistories.delete(chatId); saveTgHistory();
         return tgSend(chatId, `${found.emoji} You are now talking to ${found.name}.`);
       }
       return tgSend(chatId, `No live agent named "${arg}". Use /agents to list them.`);
@@ -210,6 +358,7 @@ async function handleTgMessage(msg) {
     if (out.demo) return; // never send demo noise to Telegram
     bumpMessages(agent.id);
     tgHistories.set(chatId, [...history, { role: 'assistant', content: out.reply }].slice(-12));
+    saveTgHistory();
     await tgSend(chatId, out.reply);
   } catch (e) {
     await tgSend(chatId, 'Sorry, I could not answer right now. Please try again.');
