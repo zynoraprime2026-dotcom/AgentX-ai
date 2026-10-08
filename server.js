@@ -332,13 +332,22 @@ async function handleTgMessage(msg) {
     if (cmd === '/start' || cmd === '/help') {
       return tgSend(chatId,
         '👋 Welcome to AgentX!\n\nI am an AI assistant running on Groq with live access to prayer times, Quran, hadith, duas and more.\n' +
-        'Commands:\n/agents — list available assistants\n/agent <name> — talk to a specific one\n\nJust type your question.');
+        'Commands:\n/agents — list available assistants\n/agent <name> — talk to a specific one\n\nJust type your question.\n/subscribe <city> — daily Fajr time + morning dua');
     }
     if (cmd === '/agents') {
       const live = agents.filter(a => a.status === 'live');
       return tgSend(chatId, live.length
         ? 'Available assistants:\n' + live.map(a => `${a.emoji} ${a.name}`).join('\n')
         : 'No live agents yet — set one live in the dashboard.');
+    }
+    if (cmd === '/subscribe') {
+      const city = arg || 'Tarkwa';
+      addSubscriber(chatId, city.charAt(0).toUpperCase() + city.slice(1));
+      return tgSend(chatId, `\u2705 You are subscribed to the daily Fajr reminder for ${city}. You will get the time and a morning dua each day before dawn. /unsubscribe to stop.`);
+    }
+    if (cmd === '/unsubscribe') {
+      removeSubscriber(chatId);
+      return tgSend(chatId, 'You have been unsubscribed from the Fajr reminder.');
     }
     if (cmd === '/agent' && arg) {
       const found = agents.find(a => a.name.toLowerCase() === arg.toLowerCase());
@@ -377,6 +386,105 @@ api.get('/telegram/status', (req, res) => res.json({
   tokenConfigured: Boolean(TG_TOKEN),
   selectionEnabled: tgSelected.size > 0
 }));
+
+// ---------- WhatsApp Cloud API ----------
+const WA_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || '';
+const WA_PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
+const WA_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN || '';
+const waHistories = new Map();
+
+async function waSend(to, text) {
+  if (!WA_PHONE_ID || !WA_TOKEN) return; // not configured yet
+  await fetch(`https://graph.facebook.com/v21.0/${WA_PHONE_ID}/messages`, {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + WA_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: String(text).slice(0, 3800) } })
+  });
+}
+
+app.get('/webhook/whatsapp', (req, res) => {
+  const q = req.query || {};
+  if (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] === WA_VERIFY_TOKEN) return res.send(q['hub.challenge'] || '');
+  res.status(403).send('verification failed');
+});
+
+app.post('/webhook/whatsapp', (req, res) => {
+  res.json({ ok: true });
+  try {
+    const val = req.body && req.body.entry && req.body.entry[0] && req.body.entry[0].changes && req.body.entry[0].changes[0] && req.body.entry[0].changes[0].value;
+    const msg = val && val.messages && val.messages[0];
+    if (!msg || msg.type !== 'text') return;
+    const from = msg.from;
+    const text = (msg.text && msg.text.body || '').trim();
+    if (!text) return;
+    const agents = readJson(AGENTS_FILE, []);
+    const agent = agents.find(a => a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled && a.platforms.whatsapp.autoReply && a.status === 'live')
+        || agents.find(a => a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled && a.status === 'live');
+    if (!agent) return;
+    const history = [...(waHistories.get(from) || []), { role: 'user', content: text }].slice(-12);
+    groqAsk(agent, history).then(out => {
+      if (out.demo) return;
+      bumpMessages(agent.id);
+      waHistories.set(from, [...history, { role: 'assistant', content: out.reply }].slice(-12));
+      return waSend(from, out.reply);
+    }).catch(() => waSend(from, 'Sorry, I could not answer right now.'));
+  } catch (e) { /* never crash on a webhook */ }
+});
+
+// ---------- Fajr broadcast (subscribers) ----------
+const SUBS_FILE = path.join(DATA_DIR, 'subscribers.json');
+const SUB_SENT_FILE = path.join(DATA_DIR, 'subs_sent.json');
+
+function addSubscriber(chatId, city) {
+  const subs = readJson(SUBS_FILE, {});
+  subs[chatId] = { city, platform: 'telegram', since: new Date().toISOString() };
+  writeJson(SUBS_FILE, subs);
+}
+
+function removeSubscriber(chatId) {
+  const subs = readJson(SUBS_FILE, {});
+  delete subs[chatId];
+  writeJson(SUBS_FILE, subs);
+}
+
+function hhmm(iso) { return String(iso).slice(11, 16); }
+
+async function sendFajrBroadcast() {
+  const subs = readJson(SUBS_FILE, {});
+  const sentToday = readJson(SUB_SENT_FILE, {});
+  const today = new Date().toISOString().slice(0, 10);
+  const results = [];
+  for (const [chatId, sub] of Object.entries(subs)) {
+    if (sentToday[chatId] === today) { results.push({ chatId, skipped: true }); continue; }
+    try {
+      const raw = await ilmCall('/v1/prayer-times', { city: sub.city, method: 'MuslimWorldLeague' });
+      const times = JSON.parse(raw);
+      const t = times.times || times.data || times;
+      const line = `\U0001F319 *Fajr in ${sub.city} today: ${hhmm(t.fajr)}*\nSunrise: ${hhmm(t.sunrise)} — catch it before then, in shaa Allah.`;
+      let dua = '';
+      try {
+        const dr = JSON.parse(await ilmCall('/v1/duas/search', { q: 'morning' }));
+        const first = (dr.results && dr.results[0]) || (dr.data && dr.data[0]);
+        if (first) dua = `\n\n*Morning dua*\n${(first.arabic || '').slice(0, 200)}\n${(first.english || first.translation || '').slice(0, 220)}`;
+      } catch (e) {}
+      await tgSend(chatId, line + dua);
+      sentToday[chatId] = today;
+      results.push({ chatId, city: sub.city, fajr: hhmm(t.fajr), sent: true });
+    } catch (e) {
+      results.push({ chatId, error: e.message.slice(0, 120) });
+    }
+  }
+  writeJson(SUB_SENT_FILE, sentToday);
+  return results;
+}
+
+app.post('/broadcast/fajr', async (req, res) => {
+  if (!process.env.BROADCAST_TOKEN || req.get('authorization') !== 'Bearer ' + process.env.BROADCAST_TOKEN)
+    return res.status(401).json({ error: 'unauthorized' });
+  res.json({ ok: true, results: await sendFajrBroadcast() });
+});
+
+api.get('/broadcast/subscribers', (req, res) => res.json(readJson(SUBS_FILE, {})));
 
 app.use('/api', api);
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
