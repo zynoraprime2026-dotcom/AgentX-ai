@@ -30,7 +30,7 @@ if (!fs.existsSync(AGENTS_FILE)) {
       id: uid(), name: 'Madrasa Assistant', emoji: '🕌',
       description: 'Answers student & parent questions about madrasa lessons, timetables and admissions.',
       systemPrompt: 'You are the Madrasa Assistant for Al-Haqq Digital madrasa in Tarkwa, Ghana. Answer kindly and concisely, using simple English. You help with lesson schedules, admission steps and general school questions.',
-      model: 'llama-3.3-70b-versatile',
+      model: 'openai/gpt-oss-120b',
       platforms: { whatsapp: { enabled: true, autoReply: true }, telegram: { enabled: false, autoReply: false } },
       status: 'live', createdAt: new Date().toISOString(), messagesHandled: 128
     },
@@ -51,7 +51,8 @@ const api = express.Router();
 
 api.get('/status', (req, res) => {
   const s = readJson(SETTINGS_FILE, {});
-  res.json({ ok: true, groqConfigured: Boolean(s.groqApiKey && s.groqApiKey.startsWith('gsk_')) });
+  const cfg = Boolean((s.groqApiKey && s.groqApiKey.startsWith('gsk_')) || (process.env.GROQ_API_KEY || '').startsWith('gsk_'));
+  res.json({ ok: true, groqConfigured: cfg });
 });
 
 api.get('/settings', (req, res) => res.json(readJson(SETTINGS_FILE, {})));
@@ -61,7 +62,8 @@ api.put('/settings', (req, res) => {
   if (typeof groqApiKey === 'string') s.groqApiKey = groqApiKey.trim();
   if (typeof webhookBase === 'string') s.webhookBase = webhookBase.trim();
   writeJson(SETTINGS_FILE, s);
-  res.json({ ok: true, groqConfigured: Boolean(s.groqApiKey && s.groqApiKey.startsWith('gsk_')) });
+  const cfg = Boolean((s.groqApiKey && s.groqApiKey.startsWith('gsk_')) || (process.env.GROQ_API_KEY || '').startsWith('gsk_'));
+  res.json({ ok: true, groqConfigured: cfg });
 });
 
 api.get('/agents', (req, res) => res.json(readJson(AGENTS_FILE, [])));
@@ -74,7 +76,7 @@ api.post('/agents', (req, res) => {
     id: uid(), name: String(name).trim().slice(0, 60),
     emoji: (emoji || '🤖').slice(0, 4), description: String(description || '').slice(0, 300),
     systemPrompt: String(systemPrompt || 'You are a helpful assistant.').slice(0, 4000),
-    model: model || 'llama-3.3-70b-versatile',
+    model: model || 'openai/gpt-oss-120b',
     platforms: { whatsapp: { enabled: false, autoReply: true }, telegram: { enabled: false, autoReply: true } },
     status: 'draft', createdAt: new Date().toISOString(), messagesHandled: 0
   };
@@ -108,7 +110,8 @@ api.post('/chat/:id', async (req, res) => {
   if (!a) return res.status(404).json({ error: 'agent not found' });
   const history = Array.isArray(req.body.history) ? req.body.history.slice(-12) : [];
   const s = readJson(SETTINGS_FILE, {});
-  if (!s.groqApiKey || !s.groqApiKey.startsWith('gsk_')) {
+  const key = (s.groqApiKey && s.groqApiKey.startsWith('gsk_')) ? s.groqApiKey : (process.env.GROQ_API_KEY || '');
+  if (!key.startsWith('gsk_')) {
     const last = history.length ? history[history.length - 1].content : '';
     return res.json({
       reply: `*[demo mode — add a Groq API key in Settings to go live]*\n\n${a.name} here. You said: "${(last || '').slice(0, 120)}". Configure a Groq key and I'll answer with ${a.model}.`,
@@ -118,7 +121,7 @@ api.post('/chat/:id', async (req, res) => {
   try {
     const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + s.groqApiKey, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: a.model,
         messages: [{ role: 'system', content: a.systemPrompt }, ...history],
