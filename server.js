@@ -11,7 +11,8 @@ const AGENTS_FILE = path.join(DATA_DIR, 'agents.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 
 app.use(express.json({ limit: '256kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use((req, res, next) => { if (req.path.startsWith('/api')) res.set('Cache-Control', 'no-store'); next(); });
+app.use(express.static(path.join(__dirname, 'public'), { etag: true, maxAge: 0, setHeaders: (res) => res.set('Cache-Control', 'no-cache') }));
 
 // ---------- tiny JSON store ----------
 function readJson(file, fallback) {

@@ -7,6 +7,7 @@ let chatAgent = null;
 
 async function api(path, opts = {}) {
   const r = await fetch('/api' + path, {
+    cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined
   });
