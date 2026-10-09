@@ -615,28 +615,39 @@ api.get('/admin/users', async (req, res) => {
 });
 api.get('/admin/dbtest', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
-  const { Client } = require('pg');
-  const pgv = require('pg/package.json').version;
-  const user = 'agentx_db_user', pass = 'BMQL5L684mMht9qtf74GZK64AWWeoIeA';
+  const net = require('net'), tls = require('tls');
   const host = 'dpg-db48runlk1mc73f8f6ng-a.frankfurt-postgres.render.com';
-  const base = 'postgresql://' + user + ':' + pass + '@' + host + ':5432/agentx_db';
-  const variants = [
-    ['ssl+servername', base, { rejectUnauthorized: false, servername: host }],
-    ['sslmode=require-str', base + '?sslmode=require', undefined],
-    ['sslmode=no-verify-str', base + '?sslmode=no-verify', undefined],
-    ['ssl-true', base, true],
-    ['ssl+tls12', base, { rejectUnauthorized: false, minVersion: 'TLSv1.2' }]
-  ];
-  const results = [];
-  for (const [label, cs, ssl] of variants) {
-    let c;
-    try { c = new Client({ connectionString: cs, ...(ssl !== undefined ? { ssl } : {}), connectionTimeoutMillis: 10000 }); }
-    catch (e) { results.push({ variant: label, ok: false, error: 'construct: ' + String(e).slice(0, 100) }); continue; }
-    try { await c.connect(); const v = await c.query('SELECT version()'); results.push({ variant: label, ok: true, server: v.rows[0].version.slice(0, 40) }); }
-    catch (e) { results.push({ variant: label, ok: false, error: String(e).slice(0, 140) }); }
-    try { await c.end(); } catch (_) {}
-  }
-  res.json({ node: process.version, pg: pgv, results });
+  const events = [];
+  const step = (name, info) => { events.push(name + (info ? ': ' + info : '')); };
+  await new Promise((resolve) => {
+    const sock = net.connect({ host, port: 5433, timeout: 8000 }, () => {
+      step('tcp-connected-port-5433');
+      resolve();
+    });
+    sock.on('timeout', () => { step('tcp-5433-timeout'); sock.destroy(); resolve(); });
+    sock.on('error', (e) => { step('tcp-5433-error', String(e).slice(0, 80)); resolve(); });
+  });
+  await new Promise((resolve) => {
+    const sock = net.connect({ host, port: 5432, timeout: 8000 }, () => {
+      step('tcp-connected');
+      sock.on('data', (d) => {
+        const b = d.length ? d[0] : -1;
+        step('sslrequest-reply', 'byte=' + b + ' (' + String.fromCharCode(b) + ') len=' + d.length);
+        if (b === 83) {
+          const t = tls.connect({ socket: sock, rejectUnauthorized: false, servername: host }, () => {
+            step('tls-upgraded', t.getProtocol() + ' cipher=' + (t.getCipher() && t.getCipher().name));
+            t.destroy(); resolve();
+          });
+          t.on('error', (e) => { step('tls-error', String(e).slice(0, 100)); resolve(); });
+          t.on('close', () => { step('tls-closed'); resolve(); });
+        } else { sock.destroy(); resolve(); }
+      });
+      sock.write(Buffer.from([0, 0, 0, 8, 4, 210, 22, 47]));
+    });
+    sock.on('timeout', () => { step('tcp-timeout'); sock.destroy(); resolve(); });
+    sock.on('error', (e) => { step('tcp-error', String(e).slice(0, 80)); resolve(); });
+  });
+  res.json({ node: process.version, events });
 });
 api.get('/admin/stats', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
