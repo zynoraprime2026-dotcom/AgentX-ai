@@ -511,18 +511,21 @@ app.post('/webhook/whatsapp', (req, res) => {
     if (!msg || msg.type !== 'text') return;
     const from = msg.from;
     const text = (msg.text && msg.text.body || '').trim();
+    console.log('[WA in ]', from, String(text).slice(0, 100));
     if (!text) return;
     const agents = readJson(AGENTS_FILE, []);
     const agent = agents.find(a => a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled && a.platforms.whatsapp.autoReply && a.status === 'live')
         || agents.find(a => a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled && a.status === 'live');
     if (!agent) return;
     const history = [...(waHistories.get(from) || []), { role: 'user', content: text }].slice(-12);
+    console.log('[WA use]', agent.name);
     groqAsk(agent, history).then(out => {
-      if (out.demo) return;
+      if (out.demo) { console.log('[WA out] demo mode'); return; }
       bumpMessages(agent.id);
       waHistories.set(from, [...history, { role: 'assistant', content: out.reply }].slice(-12));
+      console.log('[WA out]', String(out.reply).replace(/\n/g, ' | ').slice(0, 150));
       return waSend(from, out.reply);
-    }).catch(() => waSend(from, 'Sorry, I could not answer right now.'));
+    }).catch(e => { console.log('[WA err]', String(e).slice(0, 200)); return waSend(from, 'Sorry, I could not answer right now.'); });
   } catch (e) { /* never crash on a webhook */ }
 });
 
