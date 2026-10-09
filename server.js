@@ -612,6 +612,17 @@ api.get('/admin/users', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   res.json(await db.listUsers());
 });
+api.get('/admin/stats', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
+  const agents = await db.listAgents();
+  res.json({
+    users: (await db.listUsers()).length,
+    agents: agents.length,
+    liveAgents: agents.filter(a => a.status === 'live').length,
+    unownedAgents: agents.filter(a => !a.ownerId).length,
+    subscribers: (await db.listSubscribers()).length
+  });
+});
 api.delete('/admin/users/:id', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   const u = (await db.listUsers()).find(x => x.id === req.params.id);
