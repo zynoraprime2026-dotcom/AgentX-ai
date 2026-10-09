@@ -3,3 +3,6 @@ node_modules/
 data/users.json
 data/sessions.json
 data/tg_history.json
+data/agent_secrets.json
+data/subscribers.json
+data/subs_sent.json

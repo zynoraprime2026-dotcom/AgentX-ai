@@ -10,7 +10,26 @@ const DATA_DIR = path.join(__dirname, 'data');
 const AGENTS_FILE = path.join(DATA_DIR, 'agents.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 
-app.use(express.json({ limit: '256kb' }));
+function safeEq(a, b) {
+  const x = Buffer.from(String(a)), y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+app.set('trust proxy', 1);
+app.use((req, res, next) => {
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Strict-Transport-Security': 'max-age=15552000' });
+  next();
+});
+// keep the raw body so Meta's webhook signature can be verified
+app.use(express.json({ limit: '256kb', verify: (req, res, buf) => { req.rawBody = buf; } }));
+const loginHits = new Map();
+function rateLimit(max, windowMs) {
+  return (req, res, next) => {
+    const k = req.path + '|' + req.ip, now = Date.now();
+    const hits = (loginHits.get(k) || []).filter(t => now - t < windowMs);
+    if (hits.length >= max) return res.status(429).json({ error: 'too many attempts, try again later' });
+    hits.push(now); loginHits.set(k, hits); next();
+  };
+}
 app.use((req, res, next) => { if (req.path.startsWith('/api')) res.set('Cache-Control', 'no-store'); next(); });
 app.use(express.static(path.join(__dirname, 'public'), { etag: true, maxAge: 0, setHeaders: (res) => res.set('Cache-Control', 'no-cache') }));
 
@@ -86,7 +105,7 @@ api.get('/auth/status', (req, res) => {
   res.json({ needsLogin: true, authed, user: authed ? sess.user : null });
 });
 
-api.post('/auth/register', (req, res) => {
+api.post('/auth/register', rateLimit(8, 3600e3), (req, res) => {
   const { email, password, name, founderKey } = req.body || {};
   const em = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) return res.status(400).json({ error: 'valid email required' });
@@ -107,11 +126,11 @@ api.post('/auth/register', (req, res) => {
   const sess = getSessions();
   sess[token] = { user: { id, email: em, name: users[id].name, founder: isFounder }, expires: new Date(Date.now() + 30 * 864e5).toISOString() };
   saveSessions(sess);
-  res.setHeader('Set-Cookie', 'agx_sess=' + token + '; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax');
+  res.setHeader('Set-Cookie', 'agx_sess=' + token + '; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax');
   res.json({ ok: true, user: sess[token].user });
 });
 
-api.post('/auth/login', (req, res) => {
+api.post('/auth/login', rateLimit(10, 900e3), (req, res) => {
   const { email, password } = req.body || {};
   const em = String(email || '').trim().toLowerCase();
   const users = readJson(USERS_FILE, {});
@@ -121,14 +140,14 @@ api.post('/auth/login', (req, res) => {
   const sess = getSessions();
   sess[token] = { user: { id: u.id, email: u.email, name: u.name, founder: Boolean(u.founder) }, expires: new Date(Date.now() + 30 * 864e5).toISOString() };
   saveSessions(sess);
-  res.setHeader('Set-Cookie', 'agx_sess=' + token + '; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax');
+  res.setHeader('Set-Cookie', 'agx_sess=' + token + '; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax');
   res.json({ ok: true, user: sess[token].user });
 });
 
 api.post('/auth/logout', (req, res) => {
   const m = /agx_sess=([a-f0-9]+)/.exec(req.headers.cookie || '');
   if (m) { const sess = getSessions(); delete sess[m[1]]; saveSessions(sess); }
-  res.setHeader('Set-Cookie', 'agx_sess=; Path=/; HttpOnly; Max-Age=0');
+  res.setHeader('Set-Cookie', 'agx_sess=; Path=/; HttpOnly; Secure; Max-Age=0');
   res.json({ ok: true });
 });
 
@@ -147,7 +166,8 @@ api.get('/status', (req, res) => {
 
 api.get('/settings', (req, res) => {
   if (!req.user.founder) return res.json({ readOnly: true });
-  res.json(readJson(SETTINGS_FILE, {}));
+  const st = readJson(SETTINGS_FILE, {});
+  res.json({ webhookBase: st.webhookBase || '', groqApiKeySet: Boolean(st.groqApiKey), groqApiKeyHint: st.groqApiKey ? '••••' + st.groqApiKey.slice(-4) : '' });
 });
 api.put('/settings', (req, res) => {
   if (!req.user.founder) return res.status(403).json({ error: 'settings are managed by the founder' });
@@ -160,9 +180,17 @@ api.put('/settings', (req, res) => {
   res.json({ ok: true, groqConfigured: cfg });
 });
 
+// Per-agent WhatsApp tokens live in an untracked file, never in agents.json (which is committed to git)
+const AGENT_SECRETS_FILE = path.join(DATA_DIR, 'agent_secrets.json');
+function getAgentToken(id) { return (readJson(AGENT_SECRETS_FILE, {})[id] || {}).waToken || ''; }
+function setAgentToken(id, tok) {
+  const m = readJson(AGENT_SECRETS_FILE, {});
+  if (tok) m[id] = { waToken: tok }; else delete m[id];
+  writeJson(AGENT_SECRETS_FILE, m);
+}
 function publicAgent(a) {
   const o = Object.assign({}, a);
-  o.waTokenSet = Boolean(a.waToken);
+  o.waTokenSet = Boolean(getAgentToken(a.id));
   delete o.waToken;
   return o;
 }
@@ -196,8 +224,9 @@ api.put('/agents/:id', (req, res) => {
     if (pid && agents.some(x => x.id !== a.id && x.waPhoneId === pid)) return res.status(409).json({ error: 'That WhatsApp phone number ID is already linked to another agent' });
     a.waPhoneId = pid;
   }
-  if (req.body && typeof req.body.waToken === 'string' && req.body.waToken.trim()) a.waToken = req.body.waToken.trim().slice(0, 600);
-  if (req.body && req.body.waToken === '') delete a.waToken;
+  delete a.waToken;
+  if (req.body && typeof req.body.waToken === 'string' && req.body.waToken.trim()) setAgentToken(a.id, req.body.waToken.trim().slice(0, 600));
+  if (req.body && req.body.waToken === '') setAgentToken(a.id, '');
   writeJson(AGENTS_FILE, agents);
   res.json(publicAgent(a));
 });
@@ -208,6 +237,7 @@ api.delete('/agents/:id', (req, res) => {
   agents = agents.filter(x => x.id !== req.params.id && x.ownerId === req.user.id);
   if (agents.length === before) return res.status(404).json({ error: 'agent not found' });
   writeJson(AGENTS_FILE, agents);
+  setAgentToken(req.params.id, '');
   res.json({ ok: true });
 });
 
@@ -484,7 +514,7 @@ async function handleTgMessage(msg) {
 }
 
 app.post('/webhook/telegram', (req, res) => {
-  if (TG_SECRET && req.get('x-telegram-bot-api-secret-token') !== TG_SECRET) return res.status(401).end();
+  if (TG_SECRET && !safeEq(req.get('x-telegram-bot-api-secret-token') || '', TG_SECRET)) return res.status(401).end();
   const upd = req.body || {};
   const msg = upd.message || upd.edited_message;
   if (msg && msg.text) handleTgMessage(msg).catch(() => {});
@@ -521,6 +551,12 @@ app.get('/webhook/whatsapp', (req, res) => {
 const waChoice = new Map(); // shared-number users: sender -> chosen agent id
 
 app.post('/webhook/whatsapp', (req, res) => {
+  const appSecret = process.env.WHATSAPP_APP_SECRET || '';
+  if (appSecret) {
+    const sig = req.get('x-hub-signature-256') || '';
+    const want = 'sha256=' + crypto.createHmac('sha256', appSecret).update(req.rawBody || Buffer.from('')).digest('hex');
+    if (!safeEq(sig, want)) return res.status(401).end();
+  }
   res.json({ ok: true });
   try {
     const val = req.body && req.body.entry && req.body.entry[0] && req.body.entry[0].changes && req.body.entry[0].changes[0] && req.body.entry[0].changes[0].value;
@@ -531,7 +567,7 @@ app.post('/webhook/whatsapp', (req, res) => {
     const agents = readJson(AGENTS_FILE, []);
     const liveWa = a => a.status === 'live' && a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled;
     const linked = agents.find(a => a.waPhoneId && a.waPhoneId === toPhoneId && liveWa(a));
-    const reply = (t) => waSend(from, t, linked ? linked.waPhoneId : undefined, linked ? linked.waToken : undefined);
+    const reply = (t) => waSend(from, t, linked ? linked.waPhoneId : undefined, linked ? getAgentToken(linked.id) : undefined);
     if (msg.type !== 'text') { console.log('[WA in ] non-text', msg.type); return reply('I can only read text messages for now. Please type your question.').catch(() => {}); }
     const text = (msg.text && msg.text.body || '').trim();
     console.log('[WA in ]', toPhoneId, from, String(text).slice(0, 100));
@@ -619,12 +655,12 @@ async function sendFajrBroadcast() {
 }
 
 app.post('/broadcast/fajr', async (req, res) => {
-  if (!process.env.BROADCAST_TOKEN || req.get('authorization') !== 'Bearer ' + process.env.BROADCAST_TOKEN)
+  if (!process.env.BROADCAST_TOKEN || !safeEq(req.get('authorization') || '', 'Bearer ' + process.env.BROADCAST_TOKEN))
     return res.status(401).json({ error: 'unauthorized' });
   res.json({ ok: true, results: await sendFajrBroadcast() });
 });
 
-api.get('/broadcast/subscribers', (req, res) => res.json(readJson(SUBS_FILE, {})));
+api.get('/broadcast/subscribers', (req, res) => { if (!req.user.founder) return res.status(403).json({ error: 'founder only' }); res.json(readJson(SUBS_FILE, {})); });
 
 app.use('/api', api);
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));

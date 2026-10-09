@@ -205,7 +205,7 @@ async function sendChat() {
 // ---------- settings ----------
 $('#saveSettings').onclick = async () => {
   try {
-    await api('/settings', { method: 'PUT', body: { groqApiKey: $('#fGroqKey').value, webhookBase: $('#fWebhookBase').value } });
+    await api('/settings', { method: 'PUT', body: Object.assign({ webhookBase: $('#fWebhookBase').value }, $('#fGroqKey').value.trim() ? { groqApiKey: $('#fGroqKey').value.trim() } : {}) });
     toast('Settings saved'); await refreshStatus();
   } catch (e) { toast(e.message); }
 };
