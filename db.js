@@ -13,18 +13,19 @@ function localSsl(url) {
 
 async function init() {
   if (!HAS_PG) return;
-  try {
-    await initPg();
-  } catch (e) {
-    // DB unreachable/expired: degrade to JSON file mode rather than dying
-    console.error('[db] Postgres unavailable, falling back to JSON files:', String(e).slice(0, 160));
-    pool = null;
+  // try SSL first (Render/Neon), then plain (internal host without TLS), else degrade to JSON files
+  const attempts = [localSsl(process.env.DATABASE_URL), false];
+  for (const ssl of attempts) {
+    try { await initPg(ssl); return; }
+    catch (e) { console.error('[db] connection attempt failed (ssl=' + Boolean(ssl) + '):', String(e).slice(0, 140)); }
   }
+  console.error('[db] Postgres unreachable, degrading to JSON file mode');
+  pool = null;
 }
 
-async function initPg() {
+async function initPg(ssl) {
   const { Pool } = require('pg');
-  pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: localSsl(process.env.DATABASE_URL), max: 5 });
+  pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl, max: 5 });
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agx_agents (
       id text PRIMARY KEY, name text NOT NULL, emoji text DEFAULT '🤖',

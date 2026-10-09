@@ -128,6 +128,7 @@ api.get('/status', async (req, res) => {
     telegramConnected: Boolean(process.env.TELEGRAM_BOT_TOKEN),
     whatsappConnected: Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN),
     ilmConnected: Boolean(process.env.ILM_API_KEY),
+    storage: db.HAS_PG ? 'postgres' : 'files',
     adminAuth: Boolean(process.env.ADMIN_KEY)
   });
 });
