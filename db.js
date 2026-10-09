@@ -11,13 +11,15 @@ function localSsl(url) {
   return /localhost|127\.0\.0\.1/.test(url) ? false : { rejectUnauthorized: false };
 }
 
+let lastDbError = null;
+
 async function init() {
   if (!HAS_PG) return;
   // try SSL first (Render/Neon), then plain (internal host without TLS), else degrade to JSON files
   const attempts = [localSsl(process.env.DATABASE_URL), false];
   for (const ssl of attempts) {
     try { await initPg(ssl); return; }
-    catch (e) { console.error('[db] connection attempt failed (ssl=' + Boolean(ssl) + '):', String(e).slice(0, 140)); }
+    catch (e) { lastDbError = String(e); console.error('[db] connection attempt failed (ssl=' + Boolean(ssl) + '):', lastDbError.slice(0, 140)); }
   }
   console.error('[db] Postgres unreachable, degrading to JSON file mode');
   pool = null;
@@ -263,3 +265,4 @@ const store = {
 };
 module.exports = store;
 Object.defineProperty(store, 'HAS_PG', { get: () => Boolean(pool) });
+Object.defineProperty(store, 'lastDbError', { get: () => lastDbError });

@@ -621,7 +621,9 @@ api.get('/admin/stats', async (req, res) => {
     agents: agents.length,
     liveAgents: agents.filter(a => a.status === 'live').length,
     unownedAgents: agents.filter(a => !a.ownerId).length,
-    subscribers: (await db.listSubscribers()).length
+    subscribers: (await db.listSubscribers()).length,
+    storage: db.HAS_PG ? 'postgres' : 'files',
+    dbError: db.lastDbError ? db.lastDbError.slice(0, 300) : null
   });
 });
 api.delete('/admin/users/:id', async (req, res) => {
