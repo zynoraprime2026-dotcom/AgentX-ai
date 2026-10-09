@@ -160,7 +160,14 @@ api.put('/settings', (req, res) => {
   res.json({ ok: true, groqConfigured: cfg });
 });
 
-api.get('/agents', (req, res) => res.json(readJson(AGENTS_FILE, []).filter(a => a.ownerId === req.user.id)));
+function publicAgent(a) {
+  const o = Object.assign({}, a);
+  o.waTokenSet = Boolean(a.waToken);
+  delete o.waToken;
+  return o;
+}
+
+api.get('/agents', (req, res) => res.json(readJson(AGENTS_FILE, []).filter(a => a.ownerId === req.user.id).map(publicAgent)));
 
 api.post('/agents', (req, res) => {
   const { name, emoji, description, systemPrompt, model } = req.body || {};
@@ -175,7 +182,7 @@ api.post('/agents', (req, res) => {
     status: 'draft', createdAt: new Date().toISOString(), messagesHandled: 0, ownerId: req.user.id
   };
   agents.push(agent); writeJson(AGENTS_FILE, agents);
-  res.status(201).json(agent);
+  res.status(201).json(publicAgent(agent));
 });
 
 api.put('/agents/:id', (req, res) => {
@@ -184,8 +191,15 @@ api.put('/agents/:id', (req, res) => {
   if (!a) return res.status(404).json({ error: 'agent not found' });
   const allowed = ['name','emoji','description','systemPrompt','model','status','platforms'];
   for (const k of allowed) if (req.body && k in req.body) a[k] = req.body[k];
+  if (req.body && 'waPhoneId' in req.body) {
+    const pid = String(req.body.waPhoneId || '').replace(/\D/g, '').slice(0, 24);
+    if (pid && agents.some(x => x.id !== a.id && x.waPhoneId === pid)) return res.status(409).json({ error: 'That WhatsApp phone number ID is already linked to another agent' });
+    a.waPhoneId = pid;
+  }
+  if (req.body && typeof req.body.waToken === 'string' && req.body.waToken.trim()) a.waToken = req.body.waToken.trim().slice(0, 600);
+  if (req.body && req.body.waToken === '') delete a.waToken;
   writeJson(AGENTS_FILE, agents);
-  res.json(a);
+  res.json(publicAgent(a));
 });
 
 api.delete('/agents/:id', (req, res) => {
@@ -488,11 +502,12 @@ const WA_PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 const WA_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN || '';
 const waHistories = new Map();
 
-async function waSend(to, text) {
-  if (!WA_PHONE_ID || !WA_TOKEN) return; // not configured yet
-  await fetch(`https://graph.facebook.com/v21.0/${WA_PHONE_ID}/messages`, {
+async function waSend(to, text, phoneId, token) {
+  const pid = phoneId || WA_PHONE_ID, tok = token || WA_TOKEN;
+  if (!pid || !tok) return; // not configured yet
+  await fetch(`https://graph.facebook.com/v21.0/${pid}/messages`, {
     method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + WA_TOKEN, 'Content-Type': 'application/json' },
+    headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
     body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: String(text).slice(0, 3800) } })
   });
 }
@@ -503,29 +518,56 @@ app.get('/webhook/whatsapp', (req, res) => {
   res.status(403).send('verification failed');
 });
 
+const waChoice = new Map(); // shared-number users: sender -> chosen agent id
+
 app.post('/webhook/whatsapp', (req, res) => {
   res.json({ ok: true });
   try {
     const val = req.body && req.body.entry && req.body.entry[0] && req.body.entry[0].changes && req.body.entry[0].changes[0] && req.body.entry[0].changes[0].value;
     const msg = val && val.messages && val.messages[0];
-    if (!msg || msg.type !== 'text') return;
+    if (!msg) return;
+    const toPhoneId = val.metadata && val.metadata.phone_number_id ? String(val.metadata.phone_number_id) : WA_PHONE_ID;
     const from = msg.from;
-    const text = (msg.text && msg.text.body || '').trim();
-    console.log('[WA in ]', from, String(text).slice(0, 100));
-    if (!text) return;
     const agents = readJson(AGENTS_FILE, []);
-    const agent = agents.find(a => a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled && a.platforms.whatsapp.autoReply && a.status === 'live')
-        || agents.find(a => a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled && a.status === 'live');
+    const liveWa = a => a.status === 'live' && a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled;
+    const linked = agents.find(a => a.waPhoneId && a.waPhoneId === toPhoneId && liveWa(a));
+    const reply = (t) => waSend(from, t, linked ? linked.waPhoneId : undefined, linked ? linked.waToken : undefined);
+    if (msg.type !== 'text') { console.log('[WA in ] non-text', msg.type); return reply('I can only read text messages for now. Please type your question.').catch(() => {}); }
+    const text = (msg.text && msg.text.body || '').trim();
+    console.log('[WA in ]', toPhoneId, from, String(text).slice(0, 100));
+    if (!text) return;
+
+    let agent = linked;
+    if (!linked) {
+      // Shared number: only public showcase agents (no private linked number) are reachable
+      const shared = agents.filter(a => liveWa(a) && !a.waPhoneId && a.sharedWhatsApp !== false);
+      const lower = text.toLowerCase();
+      if (lower === '/agents' || lower === 'agents' || lower === 'menu') {
+        const list = shared.map((a, i) => `${i + 1}. ${a.emoji || ''} *${a.name}* (/agent ${i + 1})`).join('\n');
+        return reply('Available agents on this number:\n' + list + '\n\nReply with /agent <number> to switch.').catch(() => {});
+      }
+      const m = lower.match(/^\/agent\s+(.+)$/);
+      if (m) {
+        const q = m[1].trim();
+        const pick = /^\d+$/.test(q) ? shared[parseInt(q, 10) - 1] : shared.find(a => a.name.toLowerCase().includes(q));
+        if (!pick) return reply('I could not find that agent. Send /agents to see the list.').catch(() => {});
+        waChoice.set(from, pick.id);
+        waHistories.delete(from);
+        return reply(`Switched to ${pick.emoji || ''} *${pick.name}*. Ask away.`).catch(() => {});
+      }
+      agent = shared.find(a => a.id === waChoice.get(from)) || shared.find(a => a.id === 'agx_web01') || shared[0];
+    }
     if (!agent) return;
-    const history = [...(waHistories.get(from) || []), { role: 'user', content: text }].slice(-12);
-    console.log('[WA use]', agent.name);
+    const hkey = toPhoneId + ':' + from;
+    const history = [...(waHistories.get(hkey) || []), { role: 'user', content: text }].slice(-12);
+    console.log('[WA use]', agent.name, linked ? '(linked number)' : '(shared number)');
     groqAsk(agent, history).then(out => {
       if (out.demo) { console.log('[WA out] demo mode'); return; }
       bumpMessages(agent.id);
-      waHistories.set(from, [...history, { role: 'assistant', content: out.reply }].slice(-12));
+      waHistories.set(hkey, [...history, { role: 'assistant', content: out.reply }].slice(-12));
       console.log('[WA out]', String(out.reply).replace(/\n/g, ' | ').slice(0, 150));
-      return waSend(from, out.reply);
-    }).catch(e => { console.log('[WA err]', String(e).slice(0, 200)); return waSend(from, 'Sorry, I could not answer right now.'); });
+      return reply(out.reply);
+    }).catch(e => { console.log('[WA err]', String(e).slice(0, 200)); return reply('Sorry, I could not answer right now.').catch(() => {}); });
   } catch (e) { /* never crash on a webhook */ }
 });
 

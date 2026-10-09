@@ -47,6 +47,8 @@
           <label>Emoji<input id="fEmoji" value="🤖" maxlength="4"></label>
           <label class="full">Description<input id="fDesc" maxlength="300" placeholder="What does this agent do?"></label>
           <label class="full">System prompt<textarea id="fPrompt" rows="4" placeholder="You are a helpful assistant…"></textarea></label>
+          <label class="full">Your own WhatsApp number ID (optional)<input id="fWaPhone" inputmode="numeric" maxlength="24" placeholder="Phone number ID from Meta, e.g. 1096093593595738"></label>
+          <label class="full">WhatsApp access token (optional, stored privately)<input id="fWaToken" type="password" autocomplete="off" placeholder="Leave blank to keep the saved token"></label>
           <label>Model
             <select id="fModel">
               <option value="openai/gpt-oss-120b">GPT-OSS 120B (most capable)</option>

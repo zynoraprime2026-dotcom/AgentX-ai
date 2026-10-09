@@ -122,6 +122,8 @@ function openEditor(id) {
   $('#fDesc').value = a?.description || ''; $('#fPrompt').value = a?.systemPrompt || '';
   $('#fModel').value = a?.model || 'llama-3.3-70b-versatile';
   $('#fStatus').value = a?.status || 'draft';
+  $('#fWaPhone').value = a?.waPhoneId || ''; $('#fWaToken').value = '';
+  $('#fWaToken').placeholder = a?.waTokenSet ? 'Token saved. Leave blank to keep it' : 'Paste your Meta access token';
   $('#editor').classList.remove('hidden');
   $('#fName').focus();
 }
@@ -132,8 +134,10 @@ $('#saveAgent').onclick = async () => {
   const body = {
     name: $('#fName').value.trim(), emoji: $('#fEmoji').value.trim() || '🤖',
     description: $('#fDesc').value.trim(), systemPrompt: $('#fPrompt').value.trim(),
-    model: $('#fModel').value, status: $('#fStatus').value
+    model: $('#fModel').value, status: $('#fStatus').value,
+    waPhoneId: $('#fWaPhone').value.trim()
   };
+  if ($('#fWaToken').value.trim()) body.waToken = $('#fWaToken').value.trim();
   if (!body.name) return toast('Name is required');
   try {
     if (editingId) { await api('/agents/' + editingId, { method: 'PUT', body }); toast('Saved'); }
