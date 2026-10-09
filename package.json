@@ -1,13 +1,13 @@
 {
   "name": "agentx",
   "version": "1.0.0",
-  "description": "AgentX — multi-platform AI agent dashboard (WhatsApp, Telegram) powered by Groq LLaMA models",
+  "description": "AgentX \u2014 multi-platform AI agent dashboard (WhatsApp, Telegram) powered by Groq LLaMA models",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": "22.x"
   },
   "dependencies": {
     "express": "^4.19.2",
