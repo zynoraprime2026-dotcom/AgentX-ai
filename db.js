@@ -143,6 +143,35 @@ const store = {
     users[u.id] = u; writeJson(path.join(DATA_DIR, 'users.json'), users);
   },
 
+  async listUsers() {
+    if (pool) {
+      const r = await pool.query('SELECT u.id, u.email, u.name, u.founder, u.created_at, (SELECT count(*) FROM agx_agents a WHERE a.owner_id=u.id) AS agents FROM agx_users u ORDER BY u.created_at');
+      return r.rows.map(x => ({ id: x.id, email: x.email, name: x.name, founder: x.founder, createdAt: x.created_at, agents: Number(x.agents) }));
+    }
+    return Object.values(readJson(path.join(DATA_DIR, 'users.json'), {})).map(u => {
+      const agents = Object.values(readJson(path.join(DATA_DIR, 'agents.json'), {})).filter(a => a.ownerId === u.id).length;
+      return { id: u.id, email: u.email, name: u.name, founder: Boolean(u.founder), createdAt: u.createdAt, agents };
+    });
+  },
+  async deleteUser(id) {
+    if (pool) {
+      await pool.query('DELETE FROM agx_sessions WHERE user_data->>\'id\'=$1', [id]);
+      await pool.query('DELETE FROM agx_agent_secrets WHERE agent_id IN (SELECT id FROM agx_agents WHERE owner_id=$1)', [id]);
+      await pool.query('DELETE FROM agx_agents WHERE owner_id=$1', [id]);
+      await pool.query('DELETE FROM agx_users WHERE id=$1', [id]);
+      return true;
+    }
+    const users = readJson(path.join(DATA_DIR, 'users.json'), {}); delete users[id];
+    writeJson(path.join(DATA_DIR, 'users.json'), users);
+    const sess = readJson(path.join(DATA_DIR, 'sessions.json'), {});
+    for (const [t, v] of Object.entries(sess)) if (v.user && v.user.id === id) delete sess[t];
+    writeJson(path.join(DATA_DIR, 'sessions.json'), sess);
+    const agents = readJson(path.join(DATA_DIR, 'agents.json'), {});
+    for (const a of Object.values(agents)) if (a.ownerId === id) delete agents[a.id];
+    writeJson(path.join(DATA_DIR, 'agents.json'), agents);
+    return true;
+  },
+
   // ---------- sessions ----------
   async getSession(token) {
     if (!token) return null;

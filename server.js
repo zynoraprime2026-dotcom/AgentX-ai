@@ -45,6 +45,7 @@ const crypto = require('crypto');
 
 
 const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/telegram/status'];
+// admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 function hashPassword(pw, salt) {
   salt = salt || crypto.randomBytes(12).toString('hex');
@@ -65,6 +66,7 @@ async function loadSession(req) {
 
 api.use(async (req, res, next) => {
   if (PUBLIC_API.includes(req.path)) return next();
+  if (req.path.startsWith('/admin/')) return next(); // guarded by x-admin-key or founder session
   const [token, sess] = await loadSession(req);
   if (!sess || new Date(sess.expires) < new Date()) return res.status(401).json({ error: 'login required' });
   req.sessionToken = token; req.user = sess.user;
@@ -599,6 +601,24 @@ app.post('/broadcast/fajr', async (req, res) => {
   if (!process.env.BROADCAST_TOKEN || !safeEq(req.get('authorization') || '', 'Bearer ' + process.env.BROADCAST_TOKEN))
     return res.status(401).json({ error: 'unauthorized' });
   res.json({ ok: true, results: await sendFajrBroadcast() });
+});
+
+function isFounderOrKey(req) {
+  if (req.user && req.user.founder) return true;
+  const k = req.headers['x-admin-key'];
+  return Boolean(process.env.ADMIN_KEY && k && k === process.env.ADMIN_KEY);
+}
+api.get('/admin/users', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
+  res.json(await db.listUsers());
+});
+api.delete('/admin/users/:id', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
+  const u = (await db.listUsers()).find(x => x.id === req.params.id);
+  if (!u) return res.status(404).json({ error: 'user not found' });
+  if (u.founder) return res.status(400).json({ error: 'cannot delete the founder account' });
+  await db.deleteUser(u.id);
+  res.json({ ok: true, deleted: u.email });
 });
 
 api.get('/broadcast/subscribers', async (req, res) => { if (!req.user.founder) return res.status(403).json({ error: 'founder only' }); res.json(await db.listSubscribers()); });
