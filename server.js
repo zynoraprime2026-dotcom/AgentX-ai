@@ -618,35 +618,48 @@ api.get('/admin/dbtest', async (req, res) => {
   const net = require('net'), tls = require('tls');
   const host = 'dpg-db48runlk1mc73f8f6ng-a.frankfurt-postgres.render.com';
   const events = [];
-  const step = (name, info) => { events.push(name + (info ? ': ' + info : '')); };
-  await new Promise((resolve) => {
-    const sock = net.connect({ host, port: 5433, timeout: 8000 }, () => {
-      step('tcp-connected-port-5433');
-      resolve();
-    });
-    sock.on('timeout', () => { step('tcp-5433-timeout'); sock.destroy(); resolve(); });
-    sock.on('error', (e) => { step('tcp-5433-error', String(e).slice(0, 80)); resolve(); });
-  });
-  await new Promise((resolve) => {
-    const sock = net.connect({ host, port: 5432, timeout: 8000 }, () => {
-      step('tcp-connected');
-      sock.on('data', (d) => {
-        const b = d.length ? d[0] : -1;
-        step('sslrequest-reply', 'byte=' + b + ' (' + String.fromCharCode(b) + ') len=' + d.length);
-        if (b === 83) {
-          const t = tls.connect({ socket: sock, rejectUnauthorized: false, servername: host }, () => {
-            step('tls-upgraded', t.getProtocol() + ' cipher=' + (t.getCipher() && t.getCipher().name));
-            t.destroy(); resolve();
-          });
-          t.on('error', (e) => { step('tls-error', String(e).slice(0, 100)); resolve(); });
-          t.on('close', () => { step('tls-closed'); resolve(); });
-        } else { sock.destroy(); resolve(); }
-      });
+  const step = (n, i) => events.push(n + (i ? ': ' + i : ''));
+  const runOnce = (label, keepAlive) => new Promise((resolve) => {
+    let buf = Buffer.alloc(0);
+    const sock = net.connect({ host, port: 5432, timeout: 10000 }, () => {
+      if (keepAlive) { try { sock.setKeepAlive(true, 1000); step(label, 'keepalive set'); } catch (e) {} }
       sock.write(Buffer.from([0, 0, 0, 8, 4, 210, 22, 47]));
     });
-    sock.on('timeout', () => { step('tcp-timeout'); sock.destroy(); resolve(); });
-    sock.on('error', (e) => { step('tcp-error', String(e).slice(0, 80)); resolve(); });
+    sock.on('data', (d) => {
+      if (d.length === 1 && d[0] === 83) {
+        const t = tls.connect({ socket: sock, rejectUnauthorized: false, servername: host }, () => {
+          step(label, 'tls ok');
+          const params = ['user', 'agentx_db_user', 'database', 'agentx_db', 'client_encoding', 'utf8'].join('\0') + '\0\0';
+          const payload = Buffer.concat([Buffer.from([0, 3, 0, 0]), Buffer.from(params, 'utf8')]);
+          const len = Buffer.alloc(4); len.writeUInt32BE(payload.length + 4);
+          t.write(Buffer.concat([len, payload]));
+        });
+        t.on('data', (d2) => {
+          buf = Buffer.concat([buf, d2]);
+          const t0 = d2[0];
+          if (t0 === 69) { // ErrorResponse
+            const msg = d2.slice(7).toString('utf8').replace(/\0/g, '|');
+            step(label, 'ErrorResponse', msg.slice(0, 120));
+            t.destroy(); resolve();
+          } else if (t0 === 82) { // Authentication
+            const code = d2.readInt32BE(5);
+            step(label, 'AuthRequest code ' + code + (code === 10 ? ' SASL: ' + d2.slice(9).toString('utf8').replace(/\0/g, ',') : ''));
+            if (code === 0) { step(label, 'trust auth?! ReadyForQuery expected'); }
+            if (code === 10 || code === 5 || code === 3) { t.destroy(); resolve(); }
+          } else if (t0 === 90) { step(label, 'ReadyForQuery - CONNECTED'); t.destroy(); resolve(); }
+          else step(label, 'msg type ' + String.fromCharCode(t0) + ' len ' + d2.length);
+          if (buf.length > 2000) { t.destroy(); resolve(); }
+        });
+        t.on('error', (e) => { step(label, 'tls-error', String(e).slice(0, 100)); resolve(); });
+        t.on('close', () => { step(label, 'tls-closed'); resolve(); });
+      } else { step(label, 'sslrequest', 'byte=' + d[0]); }
+    });
+    sock.on('timeout', () => { step(label, 'tcp-timeout'); sock.destroy(); resolve(); });
+    sock.on('error', (e) => { step(label, 'tcp-error', String(e).slice(0, 80)); resolve(); });
+    sock.on('close', () => { step(label, 'tcp-closed'); resolve(); });
   });
+  await runOnce('default', false);
+  await runOnce('keepalive', true);
   res.json({ node: process.version, events });
 });
 api.get('/admin/stats', async (req, res) => {
