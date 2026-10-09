@@ -616,21 +616,27 @@ api.get('/admin/users', async (req, res) => {
 api.get('/admin/dbtest', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   const { Client } = require('pg');
+  const pgv = require('pg/package.json').version;
   const user = 'agentx_db_user', pass = 'BMQL5L684mMht9qtf74GZK64AWWeoIeA';
+  const host = 'dpg-db48runlk1mc73f8f6ng-a.frankfurt-postgres.render.com';
+  const base = 'postgresql://' + user + ':' + pass + '@' + host + ':5432/agentx_db';
   const variants = [
-    ['external+ssl', 'postgresql://' + user + ':' + pass + '@dpg-db48runlk1mc73f8f6ng-a.frankfurt-postgres.render.com:5432/agentx_db', { rejectUnauthorized: false }],
-    ['external+nossl', 'postgresql://' + user + ':' + pass + '@dpg-db48runlk1mc73f8f6ng-a.frankfurt-postgres.render.com:5432/agentx_db', false],
-    ['internal+ssl', 'postgresql://' + user + ':' + pass + '@dpg-db48runlk1mc73f8f6ng-a:5432/agentx_db', { rejectUnauthorized: false }],
-    ['internal+nossl', 'postgresql://' + user + ':' + pass + '@dpg-db48runlk1mc73f8f6ng-a:5432/agentx_db', false]
+    ['ssl+servername', base, { rejectUnauthorized: false, servername: host }],
+    ['sslmode=require-str', base + '?sslmode=require', undefined],
+    ['sslmode=no-verify-str', base + '?sslmode=no-verify', undefined],
+    ['ssl-true', base, true],
+    ['ssl+tls12', base, { rejectUnauthorized: false, minVersion: 'TLSv1.2' }]
   ];
   const results = [];
   for (const [label, cs, ssl] of variants) {
-    const c = new Client({ connectionString: cs, ssl, connectionTimeoutMillis: 8000 });
+    let c;
+    try { c = new Client({ connectionString: cs, ...(ssl !== undefined ? { ssl } : {}), connectionTimeoutMillis: 10000 }); }
+    catch (e) { results.push({ variant: label, ok: false, error: 'construct: ' + String(e).slice(0, 100) }); continue; }
     try { await c.connect(); const v = await c.query('SELECT version()'); results.push({ variant: label, ok: true, server: v.rows[0].version.slice(0, 40) }); }
-    catch (e) { results.push({ variant: label, ok: false, error: String(e).slice(0, 120) }); }
+    catch (e) { results.push({ variant: label, ok: false, error: String(e).slice(0, 140) }); }
     try { await c.end(); } catch (_) {}
   }
-  res.json({ hasEnvDb: Boolean(process.env.DATABASE_URL), results });
+  res.json({ node: process.version, pg: pgv, results });
 });
 api.get('/admin/stats', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
