@@ -613,6 +613,25 @@ api.get('/admin/users', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   res.json(await db.listUsers());
 });
+api.get('/admin/dbtest', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
+  const { Client } = require('pg');
+  const user = 'agentx_db_user', pass = 'BMQL5L684mMht9qtf74GZK64AWWeoIeA';
+  const variants = [
+    ['external+ssl', 'postgresql://' + user + ':' + pass + '@dpg-db48runlk1mc73f8f6ng-a.frankfurt-postgres.render.com:5432/agentx_db', { rejectUnauthorized: false }],
+    ['external+nossl', 'postgresql://' + user + ':' + pass + '@dpg-db48runlk1mc73f8f6ng-a.frankfurt-postgres.render.com:5432/agentx_db', false],
+    ['internal+ssl', 'postgresql://' + user + ':' + pass + '@dpg-db48runlk1mc73f8f6ng-a:5432/agentx_db', { rejectUnauthorized: false }],
+    ['internal+nossl', 'postgresql://' + user + ':' + pass + '@dpg-db48runlk1mc73f8f6ng-a:5432/agentx_db', false]
+  ];
+  const results = [];
+  for (const [label, cs, ssl] of variants) {
+    const c = new Client({ connectionString: cs, ssl, connectionTimeoutMillis: 8000 });
+    try { await c.connect(); const v = await c.query('SELECT version()'); results.push({ variant: label, ok: true, server: v.rows[0].version.slice(0, 40) }); }
+    catch (e) { results.push({ variant: label, ok: false, error: String(e).slice(0, 120) }); }
+    try { await c.end(); } catch (_) {}
+  }
+  res.json({ hasEnvDb: Boolean(process.env.DATABASE_URL), results });
+});
 api.get('/admin/stats', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   const agents = await db.listAgents();
