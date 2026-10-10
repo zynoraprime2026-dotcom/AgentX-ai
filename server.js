@@ -615,25 +615,14 @@ api.get('/admin/users', async (req, res) => {
 });
 api.get('/admin/dbtest', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
-  const dns = require('dns'), { Client } = require('pg');
-  const user = 'agentx_db_user', pass = 'oymkzkwJKz0p5AeSusPUkoXwjhvRSzro', dbn = 'agentx_db_8oz9';
-  const intHost = 'dpg-db4qtdtckfvc73fud650-a';
-  const extHost = 'dpg-db4qtdtckfvc73fud650-a.frankfurt-postgres.render.com';
+  const https = require('https');
   const events = [];
-  const step = (n, i) => events.push(n + (i ? ': ' + i : ''));
-  await new Promise((r) => dns.lookup(intHost, (e, a) => { step('dns-internal', e ? String(e).slice(0, 60) : a); r(); }));
-  const variants = [
-    ['internal+ssl', 'postgresql://' + user + ':' + pass + '@' + intHost + ':5432/' + dbn, { rejectUnauthorized: false }],
-    ['internal+nossl', 'postgresql://' + user + ':' + pass + '@' + intHost + ':5432/' + dbn, false],
-    ['external+ssl', 'postgresql://' + user + ':' + pass + '@' + extHost + ':5432/' + dbn, { rejectUnauthorized: false }],
-    ['external+ssl+ca', 'postgresql://' + user + ':' + pass + '@' + extHost + ':5432/' + dbn, { rejectUnauthorized: true }]
-  ];
-  for (const [label, cs, ssl] of variants) {
-    const c = new Client({ connectionString: cs, ssl, connectionTimeoutMillis: 12000 });
-    try { await c.connect(); const v = await c.query('SELECT version()'); step(label, 'CONNECTED ' + v.rows[0].version.slice(0, 30)); }
-    catch (e) { step(label, String(e).slice(0, 110)); }
-    try { await c.end(); } catch (_) {}
-  }
+  await new Promise((r) => https.get('https://api.ipify.org?format=json', { timeout: 8000 }, (rs) => {
+    let b = ''; rs.on('data', (c) => b += c); rs.on('end', () => { events.push('egress-ip: ' + b); r(); });
+  }).on('error', (e) => { events.push('ipify-error: ' + String(e).slice(0, 80)); r(); }));
+  await new Promise((r) => https.get('https://ipinfo.io/json', { timeout: 8000 }, (rs) => {
+    let b = ''; rs.on('data', (c) => b += c); rs.on('end', () => { try { const j = JSON.parse(b); events.push('ipinfo: ' + (j.city || '?') + ', ' + (j.region || '?') + ', ' + (j.country || '?') + ' org=' + (j.org || '?')); } catch (_) { events.push('ipinfo: parse fail'); } r(); });
+  }).on('error', (e) => { events.push('ipinfo-error: ' + String(e).slice(0, 80)); r(); }));
   res.json({ node: process.version, events });
 });
 api.get('/admin/stats', async (req, res) => {
