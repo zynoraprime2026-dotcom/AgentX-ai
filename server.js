@@ -338,7 +338,7 @@ async function groqAsk(agent, history) {
   for (let round = 0; round < 4; round++) {
     const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
       body: JSON.stringify({
         model: agent.model,
         messages,
