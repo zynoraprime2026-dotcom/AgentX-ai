@@ -656,6 +656,22 @@ api.get('/admin/stats', async (req, res) => {
     dbError: db.lastDbError ? db.lastDbError.slice(0, 300) : null
   });
 });
+api.post('/admin/dbdebug', async (req, res) => {
+  const byKey = !req.user.founder && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
+  if (!byKey) return res.status(403).json({ error: 'admin key required' });
+  const { Client } = require('pg');
+  const c = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  try { await c.connect(); } catch (e) { return res.json({ connect: String(e) }); }
+  const out = {};
+  try {
+    await c.query("SET statement_timeout=8000");
+    out.activity = (await c.query("SELECT pid, state, wait_event_type, wait_event, left(query,100) AS q FROM pg_stat_activity WHERE datname IS NOT NULL ORDER BY pid")).rows;
+    out.zombies = (await c.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state='idle in transaction' AND pid<>pg_backend_pid()")).rowCount;
+  } catch (e) { out.error = String(e).slice(0, 300); }
+  try { await c.end(); } catch (_) {}
+  res.json(out);
+});
+
 api.post('/admin/users/:id/founder', async (req, res) => {
   const byKey = !req.user.founder && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
   if (!byKey) return res.status(403).json({ error: 'admin key required' });
