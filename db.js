@@ -36,7 +36,9 @@ async function init() {
 
 async function initPg(ssl) {
   const { Pool } = require('pg');
-  pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl, max: 5 });
+  pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl, max: 3, connectionTimeoutMillis: 8000, idleTimeoutMillis: 30000 });
+  pool.on('connect', (c) => { c.query('SET statement_timeout=15000').catch(() => {}); });
+  module.exports.poolRef = pool;
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agx_agents (
       id text PRIMARY KEY, name text NOT NULL, emoji text DEFAULT '🤖',
