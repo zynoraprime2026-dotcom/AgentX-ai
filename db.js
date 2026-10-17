@@ -156,6 +156,12 @@ const store = {
     users[u.id] = u; writeJson(path.join(DATA_DIR, 'users.json'), users);
   },
 
+  async setFounder(id, flag) {
+    if (pool) { await pool.query('UPDATE agx_users SET founder=$2 WHERE id=$1', [id, Boolean(flag)]); return; }
+    const users = readJson(path.join(DATA_DIR, 'users.json'), {});
+    if (users[id]) { users[id].founder = Boolean(flag); writeJson(path.join(DATA_DIR, 'users.json'), users); }
+  },
+
   async listUsers() {
     if (pool) {
       const r = await pool.query('SELECT u.id, u.email, u.name, u.founder, u.created_at, (SELECT count(*) FROM agx_agents a WHERE a.owner_id=u.id) AS agents FROM agx_users u ORDER BY u.created_at');

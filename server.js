@@ -656,6 +656,20 @@ api.get('/admin/stats', async (req, res) => {
     dbError: db.lastDbError ? db.lastDbError.slice(0, 300) : null
   });
 });
+api.post('/admin/users/:id/founder', async (req, res) => {
+  const byKey = !req.user.founder && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
+  if (!byKey) return res.status(403).json({ error: 'admin key required' });
+  const u = (await db.listUsers()).find(x => x.id === req.params.id);
+  if (!u) return res.status(404).json({ error: 'user not found' });
+  await db.setFounder(u.id, true);
+  const from = req.body && req.body.transferFrom;
+  if (from) {
+    for (const a of await db.listAgents()) if (a.ownerId === from) { a.ownerId = u.id; await db.updateAgent(a); }
+    await db.deleteUser(from);
+  }
+  res.json({ ok: true, promoted: u.email, founder: true });
+});
+
 api.delete('/admin/users/:id', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   const u = (await db.listUsers()).find(x => x.id === req.params.id);
