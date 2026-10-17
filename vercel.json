@@ -3,6 +3,6 @@
   "crons": [{ "path": "/api/cron/fajr", "schedule": "30 3 * * *" }],
   "rewrites": [{ "source": "/(.*)", "destination": "/api" }],
   "functions": {
-    "api/index.js": { "maxDuration": 60, "includeFiles": "public/**" }
+    "api/index.js": { "maxDuration": 60, "includeFiles": "{public,data}/**" }
   }
 }

@@ -3,7 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, 'data');
+// On serverless (Vercel) the bundle filesystem is READ-ONLY: use /tmp for JSON mode,
+// copying any bundled data/ files over so seed agents survive cold starts.
+const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'agx-data') : path.join(__dirname, 'data');
+const BUNDLED_DATA = path.join(__dirname, 'data');
 const HAS_PG = Boolean(process.env.DATABASE_URL);
 let pool = null;
 
@@ -14,6 +17,12 @@ function localSsl(url) {
 let lastDbError = null;
 
 async function init() {
+  if (process.env.VERCEL && !HAS_PG) {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      for (const f of fs.readdirSync(BUNDLED_DATA)) fs.copyFileSync(path.join(BUNDLED_DATA, f), path.join(DATA_DIR, f));
+    } catch (e) { console.error('[db] bundled data copy failed:', String(e).slice(0, 140)); }
+  }
   if (!HAS_PG) return;
   // try SSL first (Render/Neon), then plain (internal host without TLS), else degrade to JSON files
   const attempts = [localSsl(process.env.DATABASE_URL), false];
