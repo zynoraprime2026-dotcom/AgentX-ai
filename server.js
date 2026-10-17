@@ -127,7 +127,7 @@ api.get('/status', async (req, res) => {
     groqConfigured: cfg,
     telegramConnected: Boolean(process.env.TELEGRAM_BOT_TOKEN),
     whatsappConnected: Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN),
-    ilmConnected: Boolean(process.env.ILM_API_KEY),
+    ilmConnected: Boolean(process.env.ILM_API_KEY || ((await db.getSettings()).ilmApiKey || '')),
     storage: db.HAS_PG ? 'postgres' : 'files',
     adminAuth: Boolean(process.env.ADMIN_KEY)
   });
@@ -136,14 +136,15 @@ api.get('/status', async (req, res) => {
 api.get('/settings', async (req, res) => {
   if (!req.user.founder) return res.json({ readOnly: true });
   const st = await db.getSettings();
-  res.json({ webhookBase: st.webhookBase || '', groqApiKeySet: Boolean(st.groqApiKey), groqApiKeyHint: st.groqApiKey ? '••••' + st.groqApiKey.slice(-4) : '' });
+  res.json({ webhookBase: st.webhookBase || '', groqApiKeySet: Boolean(st.groqApiKey), groqApiKeyHint: st.groqApiKey ? '••••' + st.groqApiKey.slice(-4) : '', ilmApiKeySet: Boolean(st.ilmApiKey), ilmApiKeyHint: st.ilmApiKey ? '••••' + st.ilmApiKey.slice(-4) : '' });
 });
 api.put('/settings', async (req, res) => {
   if (!req.user.founder) return res.status(403).json({ error: 'settings are managed by the founder' });
   const s = await db.getSettings();
-  const { groqApiKey, webhookBase } = req.body || {};
+  const { groqApiKey, webhookBase, ilmApiKey } = req.body || {};
   if (typeof groqApiKey === 'string') s.groqApiKey = groqApiKey.trim();
   if (typeof webhookBase === 'string') s.webhookBase = webhookBase.trim();
+  if (typeof ilmApiKey === 'string') s.ilmApiKey = ilmApiKey.trim();
   await db.putSettings(s);
   const cfg = Boolean((s.groqApiKey && s.groqApiKey.startsWith('gsk_')) || (process.env.GROQ_API_KEY || '').startsWith('gsk_'));
   res.json({ ok: true, groqConfigured: cfg });
@@ -206,9 +207,14 @@ api.delete('/agents/:id', async (req, res) => {
 const ILM_API_URL = (process.env.ILM_API_URL || 'https://ilm-api.vercel.app').replace(/\/$/, '');
 const ILM_API_KEY = process.env.ILM_API_KEY || '';
 
+async function getIlmKey() {
+  if (process.env.ILM_API_KEY) return process.env.ILM_API_KEY;
+  try { return (await db.getSettings()).ilmApiKey || ''; } catch (e) { return ''; }
+}
+
 async function ilmCall(pathname, params) {
   const qs = params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')) : '';
-  const r = await fetch(ILM_API_URL + pathname + qs, { headers: { 'x-api-key': ILM_API_KEY } });
+  const r = await fetch(ILM_API_URL + pathname + qs, { headers: { 'x-api-key': await getIlmKey() } });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error('Ilm API error: ' + JSON.stringify(d).slice(0, 200));
   const str = typeof d === 'string' ? d : JSON.stringify(d);
@@ -335,6 +341,7 @@ async function groqAsk(agent, history) {
     return { reply: `*[demo mode — add a Groq API key in Settings to go live]*\n\n${agent.name} here. You said: "${(last || '').slice(0, 120)}".`, demo: true };
   }
   const messages = [{ role: 'system', content: agent.systemPrompt }, ...history];
+  const ilmKey = await getIlmKey();
   for (let round = 0; round < 4; round++) {
     const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -342,8 +349,8 @@ async function groqAsk(agent, history) {
       body: JSON.stringify({
         model: agent.model,
         messages,
-        tools: ILM_API_KEY ? TOOLS : undefined,
-        tool_choice: ILM_API_KEY ? 'auto' : undefined,
+        tools: ilmKey ? TOOLS : undefined,
+        tool_choice: ilmKey ? 'auto' : undefined,
         temperature: 0.7, max_tokens: 800
       })
     });

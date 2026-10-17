@@ -42,6 +42,7 @@ async function initPg(ssl) {
     );
     CREATE TABLE IF NOT EXISTS agx_sessions (token text PRIMARY KEY, user_data jsonb NOT NULL, expires text NOT NULL);
     CREATE TABLE IF NOT EXISTS agx_settings (id int PRIMARY KEY DEFAULT 1, groq_api_key text DEFAULT '', webhook_base text DEFAULT '');
+    ALTER TABLE agx_settings ADD COLUMN IF NOT EXISTS ilm_api_key text DEFAULT '';
     INSERT INTO agx_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
     CREATE TABLE IF NOT EXISTS agx_subscribers (chat_id text PRIMARY KEY, city text, platform text, since text);
     CREATE TABLE IF NOT EXISTS agx_subs_sent (chat_id text PRIMARY KEY, day text);
@@ -200,12 +201,12 @@ const store = {
   async getSettings() {
     if (pool) {
       const r = (await pool.query('SELECT * FROM agx_settings WHERE id=1')).rows[0];
-      return { groqApiKey: r.groq_api_key || '', webhookBase: r.webhook_base || '' };
+      return { groqApiKey: r.groq_api_key || '', webhookBase: r.webhook_base || '', ilmApiKey: r.ilm_api_key || '' };
     }
-    return readJson(path.join(DATA_DIR, 'settings.json'), { groqApiKey: '', webhookBase: '' });
+    return readJson(path.join(DATA_DIR, 'settings.json'), { groqApiKey: '', webhookBase: '', ilmApiKey: '' });
   },
   async putSettings(s) {
-    if (pool) { await pool.query('UPDATE agx_settings SET groq_api_key=$1, webhook_base=$2 WHERE id=1', [s.groqApiKey || '', s.webhookBase || '']); return; }
+    if (pool) { await pool.query('UPDATE agx_settings SET groq_api_key=$1, webhook_base=$2, ilm_api_key=$3 WHERE id=1', [s.groqApiKey || '', s.webhookBase || '', s.ilmApiKey || '']); return; }
     writeJson(path.join(DATA_DIR, 'settings.json'), s);
   },
 
