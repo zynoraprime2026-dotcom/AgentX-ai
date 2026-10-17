@@ -44,7 +44,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/telegram/status'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/telegram/status', '/cron/fajr'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 function hashPassword(pw, salt) {
@@ -604,6 +604,15 @@ app.post('/broadcast/fajr', async (req, res) => {
   res.json({ ok: true, results: await sendFajrBroadcast() });
 });
 
+// Vercel cron (or any external scheduler) pings this GET daily before dawn.
+// Guarded by CRON_SECRET (falls back to BROADCAST_TOKEN so either can be used).
+api.get('/cron/fajr', async (req, res) => {
+  const token = process.env.CRON_SECRET || process.env.BROADCAST_TOKEN;
+  const auth = req.get('authorization') || '';
+  if (token && auth !== 'Bearer ' + token) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ ok: true, results: await sendFajrBroadcast() });
+});
+
 function isFounderOrKey(req) {
   if (req.user && req.user.founder) return true;
   const k = req.headers['x-admin-key'];
@@ -685,6 +694,14 @@ RULES:
   console.log('Seeded', seeds.length, 'agents');
 }
 
-db.init().then(() => seedAgents()).then(() => {
-  app.listen(PORT, () => console.log('AgentX dashboard running on http://localhost:' + PORT + (db.HAS_PG ? ' [postgres]' : ' [json files]')));
-}).catch(e => { console.error('Failed to start:', e); process.exit(1); });
+const ready = db.init().then(() => seedAgents());
+module.exports = { app, ready };
+
+if (process.env.VERCEL) {
+  // serverless: no listener, the handler in api/index.js awaits `ready`
+  ready.catch(e => { console.error('Init failed:', e); });
+} else {
+  ready.then(() => {
+    app.listen(PORT, () => console.log('AgentX dashboard running on http://localhost:' + PORT + (db.HAS_PG ? ' [postgres]' : ' [json files]')));
+  }).catch(e => { console.error('Failed to start:', e); process.exit(1); });
+}
