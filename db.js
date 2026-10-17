@@ -170,7 +170,7 @@ const store = {
     if (pool) {
       await pool.query('DELETE FROM agx_sessions WHERE user_data->>\'id\'=$1', [id]);
       await pool.query('DELETE FROM agx_agent_secrets WHERE agent_id IN (SELECT id FROM agx_agents WHERE owner_id=$1)', [id]);
-      await pool.query('DELETE FROM agx_agents WHERE owner_id=$1', [id]);
+      await pool.query('UPDATE agx_agents SET owner_id=NULL, wa_phone_id=NULL WHERE owner_id=$1', [id]);
       await pool.query('DELETE FROM agx_users WHERE id=$1', [id]);
       return true;
     }

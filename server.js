@@ -660,7 +660,8 @@ api.delete('/admin/users/:id', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   const u = (await db.listUsers()).find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'user not found' });
-  if (u.founder) return res.status(400).json({ error: 'cannot delete the founder account' });
+  const byKey = !req.user.founder && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
+  if (u.founder && !byKey) return res.status(400).json({ error: 'founder account can only be removed with the admin key' });
   await db.deleteUser(u.id);
   res.json({ ok: true, deleted: u.email });
 });
