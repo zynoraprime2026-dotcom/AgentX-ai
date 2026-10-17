@@ -32,6 +32,8 @@ function rateLimit(max, windowMs) {
   };
 }
 app.use((req, res, next) => { if (req.path.startsWith('/api')) res.set('Cache-Control', 'no-store'); next(); });
+// Serve the dashboard explicitly for '/' (serve-static's directory-index handling has crashed on Vercel).
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.use(express.static(path.join(__dirname, 'public'), { etag: true, maxAge: 0, setHeaders: (res) => res.set('Cache-Control', 'no-cache') }));
 
 const readJson = db.readJson; const writeJson = db.writeJson;
