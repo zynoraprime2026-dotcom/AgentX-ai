@@ -1,8 +1,33 @@
 {
   "version": 2,
-  "crons": [{ "path": "/api/cron/fajr", "schedule": "30 3 * * *" }],
-  "rewrites": [{ "source": "/(.*)", "destination": "/api" }],
+  "crons": [
+    {
+      "path": "/api/cron/fajr",
+      "schedule": "30 3 * * *"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/webhook/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/api"
+    }
+  ],
   "functions": {
-    "api/index.js": { "maxDuration": 60, "includeFiles": "{public,data}/**" }
+    "api/index.js": {
+      "maxDuration": 60,
+      "includeFiles": "{public,data}/**"
+    }
   }
 }
