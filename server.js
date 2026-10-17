@@ -657,7 +657,7 @@ api.get('/admin/stats', async (req, res) => {
   });
 });
 api.post('/admin/dbdebug', async (req, res) => {
-  const byKey = !req.user.founder && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
+  const byKey = !(req.user && req.user.founder) && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
   if (!byKey) return res.status(403).json({ error: 'admin key required' });
   const p = require('./db').pool();
   if (!p) return res.json({ mode: 'json-file (no postgres)' });
@@ -670,7 +670,7 @@ api.post('/admin/dbdebug', async (req, res) => {
 });
 
 api.post('/admin/users/:id/founder', async (req, res) => {
-  const byKey = !req.user.founder && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
+  const byKey = !(req.user && req.user.founder) && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
   if (!byKey) return res.status(403).json({ error: 'admin key required' });
   const u = (await db.listUsers()).find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'user not found' });
@@ -687,7 +687,7 @@ api.delete('/admin/users/:id', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   const u = (await db.listUsers()).find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'user not found' });
-  const byKey = !req.user.founder && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
+  const byKey = !(req.user && req.user.founder) && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
   if (u.founder && !byKey) return res.status(400).json({ error: 'founder account can only be removed with the admin key' });
   await db.deleteUser(u.id);
   res.json({ ok: true, deleted: u.email });
