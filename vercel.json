@@ -25,5 +25,12 @@
       "maxDuration": 60,
       "includeFiles": "{public,data}/**"
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/index.html",
+      "permanent": false
+    }
+  ]
 }
