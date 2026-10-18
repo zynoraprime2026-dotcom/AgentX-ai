@@ -328,10 +328,37 @@ async function runTool(name, args) {
           : await ilmCall('/v1/dictionary/search', { q: args.query });
       case 'get_dua': return args.search ? await ilmCall('/v1/duas/search', { q: args.search }) : await ilmCall('/v1/duas/random');
       case 'get_fiqh_ruling': return await ilmCall('/v1/fiqh/search', { topic: args.topic });
+      case 'shop_list_products': {
+        const d = await shopCall('/api/products');
+        const lines = (d.products || []).map(p => `- ${p.name} (category: ${p.category || 'general'}) — GH₵${Number(p.price).toFixed(2)}, stock: ${p.stock}${p.stock <= 3 ? ' (LOW)' : ''}`);
+        return lines.length ? 'Current shop products:\n' + lines.join('\n') : 'The shop product list is currently empty — no items have been added yet. Tell the customer the shop team can be contacted directly.';
+      }
       default: return 'Unknown tool';
     }
   } catch (e) { return 'Tool error: ' + e.message; }
 }
+
+// ---------- Al-Haqq Ops shop tools (read-only) ----------
+const ALHAQQ_OPS_API_URL = (process.env.ALHAQQ_OPS_API_URL || 'https://alhaqq-ops-api.vercel.app').replace(/\/$/, '');
+const ALHAQQ_OPS_API_KEY = process.env.ALHAQQ_OPS_API_KEY || '';
+
+async function shopCall(pathname) {
+  const r = await fetch(ALHAQQ_OPS_API_URL + pathname, { headers: { 'x-api-key': ALHAQQ_OPS_API_KEY } });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('Shop API error: ' + JSON.stringify(d).slice(0, 200));
+  return d;
+}
+
+const SHOP_TOOLS = ALHAQQ_OPS_API_KEY ? [
+  {
+    type: 'function',
+    function: {
+      name: 'shop_list_products',
+      description: 'List the shop products currently in stock with live prices in Ghana cedis (GHS) and stock counts. Use for ANY customer question about what the shop sells, prices, availability or stock of an item.',
+      parameters: { type: 'object', properties: {}, required: [] }
+    }
+  }
+] : [];
 
 // ---------- shared Groq call ----------
 
@@ -351,8 +378,8 @@ async function groqAsk(agent, history) {
       body: JSON.stringify({
         model: agent.model,
         messages,
-        tools: ilmKey ? TOOLS : undefined,
-        tool_choice: ilmKey ? 'auto' : undefined,
+        tools: (ilmKey || ALHAQQ_OPS_API_KEY) ? [...TOOLS, ...SHOP_TOOLS] : undefined,
+        tool_choice: (ilmKey || ALHAQQ_OPS_API_KEY) ? 'auto' : undefined,
         temperature: 0.7, max_tokens: 800
       })
     });
