@@ -316,7 +316,22 @@ const TOOLS = [
   }
 ];
 
-async function runTool(name, args) {
+const PROFILE_TOOLS = [
+  { type: 'function', function: {
+      name: 'get_customer_profile',
+      description: "Look up the saved profile of the customer you are currently chatting with (their name, phone and notes from previous chats). Call this at the START of a conversation so you can greet returning customers by name.",
+      parameters: { type: 'object', properties: {}, required: [] } } },
+  { type: 'function', function: {
+      name: 'save_customer_profile',
+      description: 'Save or update the current customer profile so they are recognised next time. Call whenever the customer shares their name, phone number, or a lasting preference/need.',
+      parameters: { type: 'object', properties: {
+        name: { type: 'string', description: 'Customer name' },
+        phone: { type: 'string', description: 'Customer WhatsApp/phone number' },
+        notes: { type: 'string', description: 'Short notes: usual orders, interests, preferences' }
+      }, required: ['name'] } } }
+];
+
+async function runTool(name, args, ctx) {
   try {
     switch (name) {
       case 'get_prayer_times': return await ilmCall('/v1/prayer-times', { city: args.city, date: args.date, method: 'MuslimWorldLeague' });
@@ -328,6 +343,19 @@ async function runTool(name, args) {
           : await ilmCall('/v1/dictionary/search', { q: args.query });
       case 'get_dua': return args.search ? await ilmCall('/v1/duas/search', { q: args.search }) : await ilmCall('/v1/duas/random');
       case 'get_fiqh_ruling': return await ilmCall('/v1/fiqh/search', { topic: args.topic });
+      case 'get_customer_profile': {
+        if (!ctx) return 'No chat context available.';
+        const p = await db.getProfile(ctx.channel, ctx.chatId);
+        return Object.keys(p).length ? 'Saved profile of this customer: ' + JSON.stringify(p) : 'No saved profile yet — this is a first-time customer. Introduce yourself and ask their name.';
+      }
+      case 'save_customer_profile': {
+        if (!ctx) return 'No chat context available.';
+        const patch = {};
+        for (const k of ['name', 'phone', 'notes']) if (args[k]) patch[k] = String(args[k]).slice(0, 400);
+        if (!patch.name) return 'Nothing saved — a name is required.';
+        const p = await db.saveProfile(ctx.channel, ctx.chatId, patch);
+        return 'Profile saved: ' + JSON.stringify(p);
+      }
       case 'shop_list_products': {
         const d = await shopCall('/api/products');
         const lines = (d.products || []).map(p => `- ${p.name} (category: ${p.category || 'general'}) — GH₵${Number(p.price).toFixed(2)}, stock: ${p.stock}${p.stock <= 3 ? ' (LOW)' : ''}`);
@@ -362,7 +390,7 @@ const SHOP_TOOLS = ALHAQQ_OPS_API_KEY ? [
 
 // ---------- shared Groq call ----------
 
-async function groqAsk(agent, history) {
+async function groqAsk(agent, history, ctx) {
   const st = await db.getSettings();
   const key = (st.groqApiKey && st.groqApiKey.startsWith('gsk_')) ? st.groqApiKey : (process.env.GROQ_API_KEY || '');
   if (!key.startsWith('gsk_')) {
@@ -378,8 +406,8 @@ async function groqAsk(agent, history) {
       body: JSON.stringify({
         model: agent.model,
         messages,
-        tools: (ilmKey || ALHAQQ_OPS_API_KEY) ? [...TOOLS, ...SHOP_TOOLS] : undefined,
-        tool_choice: (ilmKey || ALHAQQ_OPS_API_KEY) ? 'auto' : undefined,
+        tools: [...TOOLS, ...SHOP_TOOLS, ...PROFILE_TOOLS],
+        tool_choice: 'auto',
         temperature: 0.7, max_tokens: 800
       })
     });
@@ -392,7 +420,7 @@ async function groqAsk(agent, history) {
     for (const c of calls) {
       let args = {};
       try { args = JSON.parse(c.function.arguments || '{}'); } catch {}
-      const result = await runTool(c.function.name, args);
+      const result = await runTool(c.function.name, args, ctx);
       messages.push({ role: 'tool', tool_call_id: c.id, content: result });
     }
   }
@@ -407,7 +435,7 @@ api.post('/chat/:id', async (req, res) => {
   if (!a) return res.status(404).json({ error: 'agent not found' });
   const history = Array.isArray(req.body.history) ? req.body.history.slice(-12) : [];
   try {
-    const out = await groqAsk(a, history);
+    const out = await groqAsk(a, history, { channel: 'web', chatId: req.user.id });
     if (!out.demo) bumpMessages(a.id);
     res.json(out);
   } catch (e) { res.status(502).json({ error: e.message }); }
@@ -490,7 +518,7 @@ async function handleTgMessage(msg) {
   if (!agent) return; // no live telegram-enabled agent: stay silent
   try {
     const history = [...(await tgHist(chatId)), { role: 'user', content: text }].slice(-12);
-    const out = await groqAsk(agent, history);
+    const out = await groqAsk(agent, history, { channel: 'telegram', chatId: String(chatId) });
     if (out.demo) return; // never send demo noise to Telegram
     bumpMessages(agent.id);
     await db.appendHistory('telegram', chatId, 'user', text);
@@ -588,7 +616,7 @@ async function handleWa(req) {
   const history = [...(await db.getHistory('whatsapp', hkey)), { role: 'user', content: text }].slice(-12);
   console.log('[WA use]', agent.name, linked ? '(linked number)' : '(shared number)');
   try {
-    const out = await groqAsk(agent, history);
+    const out = await groqAsk(agent, history, { channel: 'whatsapp', chatId: String(hkey) });
     if (out.demo) { console.log('[WA out] demo mode'); return; }
     bumpMessages(agent.id);
     await db.appendHistory('whatsapp', hkey, 'user', text);

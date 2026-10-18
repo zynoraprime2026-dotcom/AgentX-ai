@@ -59,6 +59,10 @@ async function initPg(ssl) {
     CREATE TABLE IF NOT EXISTS agx_subs_sent (chat_id text PRIMARY KEY, day text);
     CREATE TABLE IF NOT EXISTS agx_hist (id bigserial PRIMARY KEY, channel text, chat_id text, role text, content text);
     CREATE INDEX IF NOT EXISTS agx_hist_chat ON agx_hist (channel, chat_id, id);
+    CREATE TABLE IF NOT EXISTS agx_profiles (
+      channel text NOT NULL, chat_id text NOT NULL, profile jsonb DEFAULT '{}', updated_at text,
+      PRIMARY KEY (channel, chat_id)
+    );
   `);
 }
 
@@ -274,6 +278,31 @@ const store = {
     arr.push({ role, content });
     all[channel][chatId] = arr.slice(-24);
     writeJson(path.join(DATA_DIR, 'histories.json'), all);
+  },
+  // ---------- customer profiles (recognition across sessions) ----------
+  async getProfile(channel, chatId) {
+    if (pool) {
+      const r = await pool.query('SELECT profile FROM agx_profiles WHERE channel=$1 AND chat_id=$2', [channel, String(chatId)]);
+      return r.rows.length ? (r.rows[0].profile || {}) : {};
+    }
+    const all = readJson(path.join(DATA_DIR, 'profiles.json'), {});
+    return (all[channel] && all[channel][chatId]) || {};
+  },
+  async saveProfile(channel, chatId, patch) {
+    const cur = await store.getProfile(channel, chatId);
+    const next = Object.assign({}, cur, patch);
+    const now = new Date().toISOString();
+    if (pool) {
+      await pool.query(
+        'INSERT INTO agx_profiles (channel, chat_id, profile, updated_at) VALUES ($1,$2,$3,$4) ON CONFLICT (channel, chat_id) DO UPDATE SET profile=$3, updated_at=$4',
+        [channel, String(chatId), JSON.stringify(next), now]);
+    } else {
+      const all = readJson(path.join(DATA_DIR, 'profiles.json'), {});
+      all[channel] = all[channel] || {};
+      all[channel][chatId] = next;
+      writeJson(path.join(DATA_DIR, 'profiles.json'), all);
+    }
+    return next;
   },
   async clearHistory(channel, chatId) {
     if (pool) { await pool.query('DELETE FROM agx_hist WHERE channel=$1 AND chat_id=$2', [channel, String(chatId)]); return; }
