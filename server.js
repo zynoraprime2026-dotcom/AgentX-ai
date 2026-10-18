@@ -787,7 +787,7 @@ RULES:
 }
 
 const ready = db.init().then(() => seedAgents());
-module.exports = { app, ready };
+module.exports = { app, ready, groqAsk, runTool };
 
 if (process.env.VERCEL) {
   // serverless: no listener, the handler in api/index.js awaits `ready`
