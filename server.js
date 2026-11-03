@@ -130,6 +130,7 @@ api.get('/status', async (req, res) => {
     telegramConnected: Boolean(process.env.TELEGRAM_BOT_TOKEN),
     whatsappConnected: Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN),
     ilmConnected: Boolean(process.env.ILM_API_KEY || ((await db.getSettings()).ilmApiKey || '')),
+    studioConnected: Boolean(process.env.STUDIO_API_KEY),
     storage: db.HAS_PG ? 'postgres' : 'files',
     adminAuth: Boolean(process.env.ADMIN_KEY)
   });
@@ -222,6 +223,54 @@ async function ilmCall(pathname, params) {
   const str = typeof d === 'string' ? d : JSON.stringify(d);
   return str.length > 2200 ? str.slice(0, 2200) + '…[truncated]' : str;
 }
+
+// ---------- Studio API (images + content scaffolding) ----------
+const STUDIO_API_URL = (process.env.STUDIO_API_URL || 'https://studio-api-nqpm.onrender.com').replace(/\/$/, '');
+const STUDIO_API_KEY = process.env.STUDIO_API_KEY || '';
+
+async function studioCall(pathname, body) {
+  if (!STUDIO_API_KEY) throw new Error('Studio API is not configured on this server.');
+  const r = await fetch(STUDIO_API_URL + pathname, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'x-api-key': STUDIO_API_KEY, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('Studio API error: ' + JSON.stringify(d).slice(0, 200));
+  const str = typeof d === 'string' ? d : JSON.stringify(d);
+  return str.length > 2200 ? str.slice(0, 2200) + '…[truncated]' : str;
+}
+
+// Per-chat daily caps so a public agent cannot burn rendering quota
+async function toolQuota(ctx, tool, limit) {
+  try {
+    const p = require('./db').poolRef;
+    if (!p || !ctx || !ctx.chatId) return true;
+    const day = new Date().toISOString().slice(0, 10);
+    await p.query('CREATE TABLE IF NOT EXISTS agx_tool_uses (chat_id text, day text, tool text, uses int NOT NULL DEFAULT 0, PRIMARY KEY (chat_id, day, tool))');
+    const r = await p.query('INSERT INTO agx_tool_uses (chat_id, day, tool, uses) VALUES ($1,$2,$3,1) ON CONFLICT (chat_id, day, tool) DO UPDATE SET uses = agx_tool_uses.uses + 1 RETURNING uses', [String(ctx.chatId), day, tool]);
+    return (r.rows[0] && r.rows[0].uses || 1) <= limit;
+  } catch (e) { console.log('[quota err]', String(e).slice(0, 120)); return true; }
+}
+
+const STUDIO_TOOLS = STUDIO_API_KEY ? [
+  { type: 'function', function: {
+      name: 'generate_image',
+      description: 'Create an original image from a text prompt and get back a public image URL. Use for posters, illustrations, reminders, thumbnails and visual explainers. Keep prompts descriptive and free of forbidden imagery.',
+      parameters: { type: 'object', properties: {
+        prompt: { type: 'string', description: 'Detailed description of the image to generate' },
+        width: { type: 'integer', description: 'Pixel width, 256-1920 (default 1024)' },
+        height: { type: 'integer', description: 'Pixel height, 256-1920 (default 1024)' }
+      }, required: ['prompt'] } } },
+  { type: 'function', function: {
+      name: 'create_content',
+      description: 'Draft content for a topic: a short video script, a structured lesson outline, or a set of social posts. Use when the user wants teaching material, da\'wah captions or a lesson plan.',
+      parameters: { type: 'object', properties: {
+        type: { type: 'string', enum: ['shorts_script', 'lesson', 'social_post'], description: 'Kind of content to draft' },
+        topic: { type: 'string', description: 'The subject to write about' },
+        audience: { type: 'string', description: 'Who it is for (e.g. new Muslims, children, general)' }
+      }, required: ['type', 'topic'] } } }
+] : [];
 
 const TOOLS = [
   {
@@ -334,6 +383,19 @@ const PROFILE_TOOLS = [
 async function runTool(name, args, ctx) {
   try {
     switch (name) {
+      case 'generate_image': {
+        if (!(await toolQuota(ctx, 'image', 3))) return 'This chat has reached its daily limit of 3 images. Tell the user to try again tomorrow, or offer a text description instead.';
+        const raw = await studioCall('/v1/image/generate', { prompt: args.prompt, width: args.width, height: args.height });
+        try {
+          const j = JSON.parse(raw);
+          if (j && j.url && ctx) ctx.imageUrl = j.url;
+          return 'Image generated (share this URL): ' + (j.url || raw);
+        } catch (e) { return raw; }
+      }
+      case 'create_content': {
+        if (!(await toolQuota(ctx, 'content', 10))) return 'This chat has reached its daily limit for content drafts. Tell the user to try again tomorrow.';
+        return await studioCall('/v1/content/generate', { type: args.type, topic: args.topic, audience: args.audience });
+      }
       case 'get_prayer_times': return await ilmCall('/v1/prayer-times', { city: args.city, date: args.date, method: 'MuslimWorldLeague' });
       case 'get_quran_ayah': return await ilmCall(`/v1/quran/${args.surah}/${args.ayah}`, { translation: args.translation });
       case 'search_hadith': return await ilmCall('/v1/hadith/search', { q: args.query, collection: args.collection, language: args.language, limit: 5 });
@@ -406,7 +468,7 @@ async function groqAsk(agent, history, ctx) {
       body: JSON.stringify({
         model: agent.model,
         messages,
-        tools: [...TOOLS, ...SHOP_TOOLS, ...PROFILE_TOOLS],
+        tools: [...TOOLS, ...SHOP_TOOLS, ...PROFILE_TOOLS, ...STUDIO_TOOLS],
         tool_choice: 'auto',
         temperature: 0.7, max_tokens: 800
       })
@@ -475,6 +537,13 @@ async function tgSend(chatId, text) {
   }
 }
 
+async function tgSendPhoto(chatId, photoUrl, caption) {
+  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendPhoto`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, photo: photoUrl, caption: String(caption || '').slice(0, 1000) })
+  });
+}
+
 async function handleTgMessage(msg) {
   const chatId = msg.chat && msg.chat.id;
   const text = (msg.text || '').trim();
@@ -518,12 +587,14 @@ async function handleTgMessage(msg) {
   if (!agent) return; // no live telegram-enabled agent: stay silent
   try {
     const history = [...(await tgHist(chatId)), { role: 'user', content: text }].slice(-12);
-    const out = await groqAsk(agent, history, { channel: 'telegram', chatId: String(chatId) });
+    const ctx = { channel: 'telegram', chatId: String(chatId) };
+    const out = await groqAsk(agent, history, ctx);
     if (out.demo) return; // never send demo noise to Telegram
     bumpMessages(agent.id);
     await db.appendHistory('telegram', chatId, 'user', text);
     await db.appendHistory('telegram', chatId, 'assistant', out.reply);
-    await tgSend(chatId, out.reply);
+    if (ctx.imageUrl) await tgSendPhoto(chatId, ctx.imageUrl, out.reply);
+    else await tgSend(chatId, out.reply);
   } catch (e) {
     await tgSend(chatId, 'Sorry, I could not answer right now. Please try again.');
   }
@@ -556,6 +627,18 @@ async function waSend(to, text, phoneId, token) {
     headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
     body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: String(text).slice(0, 3800) } })
   });
+}
+
+async function waSendImage(to, imageUrl, caption, phoneId, token) {
+  const pid = phoneId || WA_PHONE_ID, tok = token || WA_TOKEN;
+  if (!pid || !tok) return;
+  const body = { messaging_product: 'whatsapp', to, type: 'image', image: { link: imageUrl } };
+  if (caption) body.image.caption = String(caption).slice(0, 900);
+  const r = await fetch(`https://graph.facebook.com/v21.0/${pid}/messages`, {
+    method: 'POST', headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) console.log('[WA img err]', (await r.text()).slice(0, 160));
 }
 
 app.get('/webhook/whatsapp', (req, res) => {
@@ -616,13 +699,18 @@ async function handleWa(req) {
   const history = [...(await db.getHistory('whatsapp', hkey)), { role: 'user', content: text }].slice(-12);
   console.log('[WA use]', agent.name, linked ? '(linked number)' : '(shared number)');
   try {
-    const out = await groqAsk(agent, history, { channel: 'whatsapp', chatId: String(hkey) });
+    const ctx = { channel: 'whatsapp', chatId: String(hkey) };
+    const out = await groqAsk(agent, history, ctx);
     if (out.demo) { console.log('[WA out] demo mode'); return; }
     bumpMessages(agent.id);
     await db.appendHistory('whatsapp', hkey, 'user', text);
     await db.appendHistory('whatsapp', hkey, 'assistant', out.reply);
     console.log('[WA out]', String(out.reply).replace(/\n/g, ' | ').slice(0, 150));
-    await reply(out.reply);
+    if (ctx.imageUrl) {
+      await waSendImage(from, ctx.imageUrl, out.reply, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
+    } else {
+      await reply(out.reply);
+    }
   } catch (e) {
     console.log('[WA err]', String(e).slice(0, 200));
     await reply('Sorry, I could not answer right now.').catch(() => {});
