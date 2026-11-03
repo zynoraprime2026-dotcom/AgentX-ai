@@ -669,7 +669,7 @@ async function speakText(text) {
     if ('speechSynthesis' in window) {
       const u = new SpeechSynthesisUtterance(text.slice(0, 600));
       speechSynthesis.speak(u);
-      $('#chatFoot').textContent = 'Spoken by your browser (server voice needs Pro).';
+      $('#chatFoot').textContent = 'Spoken by your browser' + (e && e.message ? ' (' + e.message + ')' : '.');
     } else {
       $('#chatFoot').textContent = e.message;
     }
