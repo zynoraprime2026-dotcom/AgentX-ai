@@ -293,6 +293,15 @@
         </div>
         <div class="row-between"><button class="btn primary" id="saveSettings">Save settings</button><button class="btn" id="logoutBtn">Log out</button></div>
       </div>
+      <div class="card" style="margin-top:16px">
+        <h2>Password</h2>
+        <p class="muted">Change the password for this account.</p>
+        <div class="form-grid">
+          <label>Current password<input id="pwCurrent" type="password" autocomplete="current-password"></label>
+          <label>New password<input id="pwNext" type="password" autocomplete="new-password" placeholder="min 6 characters"></label>
+        </div>
+        <div class="row-end"><button class="btn primary" id="changePwBtn">Update password</button></div>
+      </div>
     </section>
   </main>
 </div>
@@ -343,6 +352,7 @@
         <div class="login-tabs">
           <button class="logintab active" data-tab="signin">Sign in</button>
           <button class="logintab" data-tab="signup">Create account</button>
+          <button class="logintab" data-tab="recover">Recover</button>
         </div>
         <div id="signinForm" style="display:flex;flex-direction:column;gap:10px">
           <input id="loginEmail" type="email" placeholder="Email" autocomplete="email">
@@ -355,6 +365,13 @@
           <input id="regPass" type="password" placeholder="Password (min 6 chars)" autocomplete="new-password">
           <input id="regKey" placeholder="Founder key (optional)" autocomplete="off">
           <button class="btn primary" id="registerBtn">Create my account</button>
+        </div>
+        <div id="recoverForm" style="display:none;flex-direction:column;gap:10px">
+          <p class="muted" style="font-size:13px;margin:0">Set a new password with your founder key. This is the only reset channel, so keep the key safe.</p>
+          <input id="recEmail" type="email" placeholder="Account email" autocomplete="email">
+          <input id="recKey" placeholder="Founder key" autocomplete="off">
+          <input id="recPass" type="password" placeholder="New password (min 6 chars)" autocomplete="new-password">
+          <button class="btn primary" id="recoverBtn">Set new password and sign in</button>
         </div>
         <p class="muted" id="loginErr" style="margin-top:8px"></p>
       </div>
