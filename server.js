@@ -131,6 +131,7 @@ api.get('/status', async (req, res) => {
     whatsappConnected: Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN),
     ilmConnected: Boolean(process.env.ILM_API_KEY || ((await db.getSettings()).ilmApiKey || '')),
     studioConnected: Boolean(process.env.STUDIO_API_KEY),
+    turathConnected: Boolean(process.env.TURATH_API_KEY),
     storage: db.HAS_PG ? 'postgres' : 'files',
     adminAuth: Boolean(process.env.ADMIN_KEY)
   });
@@ -272,6 +273,57 @@ const STUDIO_TOOLS = STUDIO_API_KEY ? [
       }, required: ['type', 'topic'] } } }
 ] : [];
 
+// ---------- Turath API (manuscripts, scholars, chronology) ----------
+const TURATH_API_URL = (process.env.TURATH_API_URL || 'https://turath-api.vercel.app').replace(/\/$/, '');
+const TURATH_API_KEY = process.env.TURATH_API_KEY || '';
+
+async function turathCall(pathname, params) {
+  if (!TURATH_API_KEY) throw new Error('Turath API not configured');
+  const qs = params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString() : '';
+  const r = await fetch(TURATH_API_URL + pathname + qs, {
+    headers: { 'x-api-key': TURATH_API_KEY, 'User-Agent': 'AgentX/1.0' }
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('Turath API error: ' + JSON.stringify(d).slice(0, 180));
+  const str = typeof d === 'string' ? d : JSON.stringify(d);
+  return str.length > 2400 ? str.slice(0, 2400) + '…[truncated]' : str;
+}
+
+const TURATH_TOOLS = TURATH_API_KEY ? [
+  { type: 'function', function: {
+      name: 'search_manuscripts',
+      description: 'Search the Turath database of Islamic manuscripts (47 records: Qurans, biographical dictionaries, scholarly works) by keyword, subject, language, region or century.',
+      parameters: { type: 'object', properties: {
+        query: { type: 'string', description: 'Keyword: title, author, holding library or description' },
+        subject: { type: 'string', description: 'Subject, e.g. Quran, Hadith, Biography & Scholarship, Fiqh' },
+        language: { type: 'string', description: 'Arabic, Persian, Malay (Jawi script)…' },
+        region: { type: 'string', description: 'Region of origin, e.g. Hijaz, Sahel, Andalusia' },
+        century: { type: 'integer', description: 'Hijri century as a number, e.g. 10' }
+      }, required: ['query'] } } },
+  { type: 'function', function: {
+      name: 'get_manuscript',
+      description: 'Fetch the full record of one Turath manuscript by its numeric id: title, author, date, script, holding library, description and any digital or image link.',
+      parameters: { type: 'object', properties: { id: { type: 'integer', description: 'Manuscript id from a previous search' } }, required: ['id'] } } },
+  { type: 'function', function: {
+      name: 'manuscript_of_the_day',
+      description: 'Get the Turath manuscript featured for today. Use it as a warm opener or a daily knowledge share.',
+      parameters: { type: 'object', properties: {}, required: [] } } },
+  { type: 'function', function: {
+      name: 'search_scholars',
+      description: 'Search Turath scholar biographies (classical Islamic scholars, their era, field, region and works).',
+      parameters: { type: 'object', properties: {
+        query: { type: 'string', description: 'Scholar name, work or topic' },
+        field: { type: 'string', description: 'Field of scholarship, e.g. Hadith, Tafsir, Fiqh, History' }
+      }, required: ['query'] } } },
+  { type: 'function', function: {
+      name: 'search_historical_events',
+      description: 'Search Turath Islamic historical events and chronology by keyword or year.',
+      parameters: { type: 'object', properties: {
+        query: { type: 'string', description: 'Event keyword, e.g. Timbuktu, Andalusia, Hajj' },
+        year: { type: 'integer', description: 'Hijri year' }
+      }, required: ['query'] } } }
+] : [];
+
 const TOOLS = [
   {
     type: 'function',
@@ -396,6 +448,11 @@ async function runTool(name, args, ctx) {
         if (!(await toolQuota(ctx, 'content', 10))) return 'This chat has reached its daily limit for content drafts. Tell the user to try again tomorrow.';
         return await studioCall('/v1/content/generate', { type: args.type, topic: args.topic, audience: args.audience });
       }
+      case 'search_manuscripts': return await turathCall('/api/manuscripts', { q: args.query, subject: args.subject, language: args.language, region: args.region, century: args.century, per: 5 });
+      case 'get_manuscript': return await turathCall('/api/manuscripts/' + encodeURIComponent(args.id));
+      case 'manuscript_of_the_day': return await turathCall('/api/manuscripts/daily');
+      case 'search_scholars': return await turathCall('/api/scholars', { q: args.query, field: args.field, per: 5 });
+      case 'search_historical_events': return await turathCall('/api/events', { q: args.query, year: args.year, per: 5 });
       case 'get_prayer_times': return await ilmCall('/v1/prayer-times', { city: args.city, date: args.date, method: 'MuslimWorldLeague' });
       case 'get_quran_ayah': return await ilmCall(`/v1/quran/${args.surah}/${args.ayah}`, { translation: args.translation });
       case 'search_hadith': return await ilmCall('/v1/hadith/search', { q: args.query, collection: args.collection, language: args.language, limit: 5 });
@@ -468,7 +525,7 @@ async function groqAsk(agent, history, ctx) {
       body: JSON.stringify({
         model: agent.model,
         messages,
-        tools: [...TOOLS, ...SHOP_TOOLS, ...PROFILE_TOOLS, ...STUDIO_TOOLS],
+        tools: [...TOOLS, ...SHOP_TOOLS, ...PROFILE_TOOLS, ...STUDIO_TOOLS, ...TURATH_TOOLS],
         tool_choice: 'auto',
         temperature: 0.7, max_tokens: 800
       })
