@@ -4,6 +4,7 @@ const express = require('express');
 const path = require('path');
 
 const db = require('./db');
+const suite = require('./lib/suite');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -46,7 +47,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/telegram/status', '/cron/fajr'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/telegram/status', '/cron/fajr', '/cron/tick'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 function hashPassword(pw, salt) {
@@ -163,12 +164,14 @@ async function publicAgent(a) {
 }
 
 api.get('/agents', async (req, res) => {
-  const mine = (await db.listAgents()).filter(a => a.ownerId === req.user.id);
+  const mine = (await db.listAgents())
+    .filter(a => a.ownerId === req.user.id)
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || String(a.createdAt).localeCompare(String(b.createdAt)));
   res.json(await Promise.all(mine.map(publicAgent)));
 });
 
 api.post('/agents', async (req, res) => {
-  const { name, emoji, description, systemPrompt, model } = req.body || {};
+  const { name, emoji, description, systemPrompt, model, persona, languages, autoLanguage, groupReply } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name is required' });
   const agent = {
     id: uid(), name: String(name).trim().slice(0, 60),
@@ -176,6 +179,11 @@ api.post('/agents', async (req, res) => {
     systemPrompt: String(systemPrompt || 'You are a helpful assistant.').slice(0, 4000),
     model: model || 'openai/gpt-oss-120b',
     platforms: { whatsapp: { enabled: false, autoReply: true }, telegram: { enabled: false, autoReply: true } },
+    persona: persona && typeof persona === 'object' ? persona : {},
+    languages: Array.isArray(languages) ? languages.slice(0, 8) : [],
+    autoLanguage: autoLanguage !== false,
+    groupReply: groupReply === 'always' ? 'always' : 'mention',
+    sortOrder: (await db.listAgents()).filter(x => x.ownerId === req.user.id).length,
     status: 'draft', createdAt: new Date().toISOString(), messagesHandled: 0, ownerId: req.user.id
   };
   await db.insertAgent(agent);
@@ -185,7 +193,7 @@ api.post('/agents', async (req, res) => {
 api.put('/agents/:id', async (req, res) => {
   const a = (await db.listAgents()).find(x => x.id === req.params.id && x.ownerId === req.user.id);
   if (!a) return res.status(404).json({ error: 'agent not found' });
-  const allowed = ['name','emoji','description','systemPrompt','model','status','platforms'];
+  const allowed = ['name','emoji','description','systemPrompt','model','status','platforms','persona','languages','autoLanguage','groupReply','sortOrder','knowledgeEnabled'];
   for (const k of allowed) if (req.body && k in req.body) a[k] = req.body[k];
   if (req.body && 'waPhoneId' in req.body) {
     const pid = String(req.body.waPhoneId || '').replace(/\D/g, '').slice(0, 24);
@@ -516,7 +524,16 @@ async function groqAsk(agent, history, ctx) {
     const last = history.length ? history[history.length - 1].content : '';
     return { reply: `*[demo mode — add a Groq API key in Settings to go live]*\n\n${agent.name} here. You said: "${(last || '').slice(0, 120)}".`, demo: true };
   }
-  const messages = [{ role: 'system', content: agent.systemPrompt }, ...history];
+  let extras = '';
+  try {
+    const lastUser = [...history].reverse().find(m => m.role === 'user');
+    extras = await suite.promptExtras(agent, {
+      query: lastUser ? String(lastUser.content || '') : '',
+      channel: ctx && ctx.channel,
+      isGroup: Boolean(ctx && ctx.isGroup)
+    });
+  } catch (e) { console.log('[prompt extras]', String(e).slice(0, 120)); }
+  const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') }, ...history];
   const ilmKey = await getIlmKey();
   for (let round = 0; round < 4; round++) {
     const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -553,11 +570,21 @@ api.post('/chat/:id', async (req, res) => {
   const a = (await db.listAgents()).find(x => x.id === req.params.id && x.ownerId === req.user.id);
   if (!a) return res.status(404).json({ error: 'agent not found' });
   const history = Array.isArray(req.body.history) ? req.body.history.slice(-12) : [];
+  const lastUser = [...history].reverse().find(m => m.role === 'user');
+  const started = Date.now();
+  const base = { ownerId: req.user.id, agentId: a.id, agentName: a.name, channel: 'web' };
+  suite.logEvent({ ...base, kind: 'message', query: lastUser ? String(lastUser.content || '').slice(0, 300) : '' });
   try {
     const out = await groqAsk(a, history, { channel: 'web', chatId: req.user.id });
-    if (!out.demo) bumpMessages(a.id);
+    if (!out.demo) {
+      bumpMessages(a.id);
+      suite.logEvent({ ...base, kind: 'reply', latency: Date.now() - started, query: lastUser ? String(lastUser.content || '').slice(0, 300) : '' });
+    }
     res.json(out);
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) {
+    suite.logEvent({ ...base, kind: 'error', error: String(e.message).slice(0, 200) });
+    res.status(502).json({ error: e.message });
+  }
 });
 
 // ---------- Telegram webhook ----------
@@ -601,11 +628,34 @@ async function tgSendPhoto(chatId, photoUrl, caption) {
   });
 }
 
+// A Telegram voice note: download it, transcribe with Whisper, then answer as if typed.
+async function handleTgVoice(msg) {
+  const chatId = msg.chat && msg.chat.id;
+  if (!chatId || !TG_TOKEN) return;
+  const fileId = msg.voice && msg.voice.file_id;
+  if (!fileId) return;
+  const info = await (await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`)).json();
+  const filePath = info && info.result && info.result.file_path;
+  if (!filePath) return tgSend(chatId, 'I could not fetch that voice note.');
+  const audio = await fetch(`https://api.telegram.org/file/bot${TG_TOKEN}/${filePath}`);
+  const buf = Buffer.from(await audio.arrayBuffer());
+  let text = '';
+  try {
+    text = await suite.transcribeBuffer(buf, msg.voice.mime_type || 'audio/ogg');
+  } catch (e) {
+    return tgSend(chatId, 'I could not hear that clearly. Please type it, or try again.');
+  }
+  if (!text.trim()) return tgSend(chatId, 'That voice note came through empty. Please try again.');
+  await handleTgMessage(Object.assign({}, msg, { text, voice: undefined }));
+}
+
 async function handleTgMessage(msg) {
   const chatId = msg.chat && msg.chat.id;
   const text = (msg.text || '').trim();
   if (!chatId || !text) return;
   const agents = await db.listAgents();
+  const isGroup = ['group', 'supergroup'].includes((msg.chat && msg.chat.type) || '');
+  const anyAgent = pickAgent(agents, chatId);
 
   if (text.startsWith('/')) {
     const cmd = text.split(/\s+/)[0].split('@')[0].toLowerCase();
@@ -613,7 +663,7 @@ async function handleTgMessage(msg) {
     if (cmd === '/start' || cmd === '/help') {
       return tgSend(chatId,
         '👋 Welcome to AgentX!\n\nI am an AI assistant running on Groq with live access to prayer times, Quran, hadith, duas and more.\n' +
-        'Commands:\n/agents — list available assistants\n/agent <name> — talk to a specific one\n\nJust type your question.\n/subscribe <city> — daily Fajr time + morning dua');
+        'Commands:\n/agents — list available assistants\n/agent <name> — talk to a specific one\n/remind 30m drink water — set a reminder\n/reminders — your pending reminders\n\nJust type your question.\n/subscribe <city> — daily Fajr time + morning dua');
     }
     if (cmd === '/agents') {
       const live = agents.filter(a => a.status === 'live');
@@ -638,21 +688,41 @@ async function handleTgMessage(msg) {
       }
       return tgSend(chatId, `No live agent named "${arg}". Use /agents to list them.`);
     }
+    if (cmd === '/remind') {
+      const r = await suite.quickReminder({ agent: anyAgent, channel: 'telegram', chatId, arg });
+      return tgSend(chatId, r.reply);
+    }
+    if (cmd === '/reminders') {
+      const mine = (await suite.docs.list('reminders', { chatId: String(chatId) })).filter(r => r.status === 'pending');
+      if (!mine.length) return tgSend(chatId, 'No pending reminders. Set one with /remind 30m drink water.');
+      return tgSend(chatId, 'Pending reminders:\n' + mine.slice(0, 10).map(r => '• ' + r.dueAt.slice(0, 16).replace('T', ' ') + ' UTC — ' + r.title).join('\n'));
+    }
   }
 
   const agent = pickAgent(agents, chatId);
   if (!agent) return; // no live telegram-enabled agent: stay silent
+  if (isGroup) {
+    const replyToBot = Boolean(msg.reply_to_message && msg.reply_to_message.from && msg.reply_to_message.from.is_bot);
+    const mentioned = (msg.entities || []).some(e => e.type === 'mention') || /@\w+/.test(text);
+    const allowed = suite.shouldAnswerGroup({ isGroup: true, mode: agent.groupReply, text, botNames: [agent.name], replyToBot: replyToBot || mentioned });
+    if (!allowed) return; // group etiquette: only answer when addressed
+  }
+  const tgBase = { ownerId: agent.ownerId, agentId: agent.id, agentName: agent.name, channel: 'telegram' };
+  const tgStarted = Date.now();
+  suite.logEvent({ ...tgBase, kind: 'message', query: String(text).slice(0, 300) });
   try {
     const history = [...(await tgHist(chatId)), { role: 'user', content: text }].slice(-12);
-    const ctx = { channel: 'telegram', chatId: String(chatId) };
+    const ctx = { channel: 'telegram', chatId: String(chatId), isGroup };
     const out = await groqAsk(agent, history, ctx);
     if (out.demo) return; // never send demo noise to Telegram
     bumpMessages(agent.id);
+    suite.logEvent({ ...tgBase, kind: 'reply', latency: Date.now() - tgStarted, query: String(text).slice(0, 300) });
     await db.appendHistory('telegram', chatId, 'user', text);
     await db.appendHistory('telegram', chatId, 'assistant', out.reply);
     if (ctx.imageUrl) await tgSendPhoto(chatId, ctx.imageUrl, out.reply);
     else await tgSend(chatId, out.reply);
   } catch (e) {
+    suite.logEvent({ ...tgBase, kind: 'error', error: String(e.message).slice(0, 200) });
     await tgSend(chatId, 'Sorry, I could not answer right now. Please try again.');
   }
 }
@@ -661,7 +731,9 @@ app.post('/webhook/telegram', (req, res) => {
   if (TG_SECRET && !safeEq(req.get('x-telegram-bot-api-secret-token') || '', TG_SECRET)) return res.status(401).end();
   const upd = req.body || {};
   const msg = upd.message || upd.edited_message;
-  if (msg && msg.text) handleTgMessage(msg).catch(() => {});
+  if (msg && msg.voice) {
+    handleTgVoice(msg).catch(e => console.log('[TG voice]', String(e).slice(0, 160)));
+  } else if (msg && msg.text) handleTgMessage(msg).catch(() => {});
   res.json({ ok: true });
 });
 
@@ -734,7 +806,7 @@ async function handleWa(req) {
   const liveWa = a => a.status === 'live' && a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled;
   const linked = agents.find(a => a.waPhoneId && a.waPhoneId === toPhoneId && liveWa(a));
   const linkedToken = linked ? await db.getAgentToken(linked.id) : '';
-  const reply = (t) => waSend(from, t, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
+  const reply = (t) => waSend(chatTarget, t, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
   if (msg.type !== 'text') { console.log('[WA in ] non-text', msg.type); return reply('I can only read text messages for now. Please type your question.'); }
   const text = (msg.text && msg.text.body || '').trim();
   console.log('[WA in ]', toPhoneId, from, String(text).slice(0, 100));
@@ -762,23 +834,34 @@ async function handleWa(req) {
     agent = shared.find(a => a.id === waChoice.get(from)) || shared.find(a => a.id === 'agx_web01') || shared[0];
   }
   if (!agent) return;
+  const isGroup = Boolean(msg.group_id || /@g\.us$/i.test(String(msg.group_id || '')) || /@g\.us$/i.test(String(from)));
+  const chatTarget = msg.group_id || from;
+  if (isGroup) {
+    const allowed = suite.shouldAnswerGroup({ isGroup: true, mode: agent.groupReply, text, botNames: [agent.name, 'agentx'] });
+    if (!allowed) { console.log('[WA group] not addressed, staying silent'); return; }
+  }
   const history = [...(await db.getHistory('whatsapp', hkey)), { role: 'user', content: text }].slice(-12);
   console.log('[WA use]', agent.name, linked ? '(linked number)' : '(shared number)');
+  const waBase = { ownerId: agent.ownerId, agentId: agent.id, agentName: agent.name, channel: 'whatsapp' };
+  const waStarted = Date.now();
+  suite.logEvent({ ...waBase, kind: 'message', query: String(text).slice(0, 300) });
   try {
-    const ctx = { channel: 'whatsapp', chatId: String(hkey) };
+    const ctx = { channel: 'whatsapp', chatId: String(hkey), isGroup };
     const out = await groqAsk(agent, history, ctx);
     if (out.demo) { console.log('[WA out] demo mode'); return; }
     bumpMessages(agent.id);
+    suite.logEvent({ ...waBase, kind: 'reply', latency: Date.now() - waStarted, query: String(text).slice(0, 300) });
     await db.appendHistory('whatsapp', hkey, 'user', text);
     await db.appendHistory('whatsapp', hkey, 'assistant', out.reply);
     console.log('[WA out]', String(out.reply).replace(/\n/g, ' | ').slice(0, 150));
     if (ctx.imageUrl) {
-      await waSendImage(from, ctx.imageUrl, out.reply, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
+      await waSendImage(chatTarget, ctx.imageUrl, out.reply, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
     } else {
       await reply(out.reply);
     }
   } catch (e) {
     console.log('[WA err]', String(e).slice(0, 200));
+    suite.logEvent({ ...waBase, kind: 'error', error: String(e.message).slice(0, 200) });
     await reply('Sorry, I could not answer right now.').catch(() => {});
   }
 }
@@ -828,7 +911,9 @@ api.get('/cron/fajr', async (req, res) => {
   const token = process.env.CRON_SECRET || process.env.BROADCAST_TOKEN;
   const auth = req.get('authorization') || '';
   if (token && auth !== 'Bearer ' + token) return res.status(401).json({ error: 'unauthorized' });
-  res.json({ ok: true, results: await sendFajrBroadcast() });
+  const results = await sendFajrBroadcast();
+  const ticked = await suite.tick().catch(e => ({ error: String(e).slice(0, 160) }));
+  res.json({ ok: true, results, reminders: ticked.reminders, triggers: ticked.triggers });
 });
 
 function isFounderOrKey(req) {
@@ -904,6 +989,15 @@ api.delete('/admin/users/:id', async (req, res) => {
 
 api.get('/broadcast/subscribers', async (req, res) => { if (!req.user.founder) return res.status(403).json({ error: 'founder only' }); res.json(await db.listSubscribers()); });
 
+suite.attach({
+  api,
+  db,
+  send: async (channel, chatId, text) => {
+    if (channel === 'whatsapp') return waSend(chatId, text);
+    return tgSend(chatId, text);
+  }
+});
+
 app.use('/api', api);
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
@@ -941,7 +1035,7 @@ RULES:
 }
 
 const ready = db.init().then(() => seedAgents());
-module.exports = { app, ready, groqAsk, runTool };
+module.exports = { app, ready, groqAsk, runTool, suite };
 
 if (process.env.VERCEL) {
   // serverless: no listener, the handler in api/index.js awaits `ready`

@@ -11,10 +11,14 @@
   <aside class="sidebar">
     <div class="brand"><span class="logo">X</span> <b>AgentX</b></div>
     <nav>
-      <button class="navbtn active" data-view="overview">📊 Overview</button>
-      <button class="navbtn" data-view="agents">🤖 Agents</button>
-      <button class="navbtn" data-view="channels">📡 Channels</button>
-      <button class="navbtn" data-view="settings">⚙️ Settings</button>
+      <button class="navbtn active" data-view="overview" title="Your agents at a glance">📊 Overview</button>
+      <button class="navbtn" data-view="agents" title="Create, arrange and tune your agents">🤖 Agents</button>
+      <button class="navbtn" data-view="analytics" title="Messages, latency and top questions">📈 Analytics</button>
+      <button class="navbtn" data-view="reminders" title="Scheduled messages your agents push">⏰ Reminders</button>
+      <button class="navbtn" data-view="triggers" title="Watch an external feed and message when it changes">🔔 Triggers</button>
+      <button class="navbtn" data-view="channels" title="WhatsApp and Telegram connections">📡 Channels</button>
+      <button class="navbtn" data-view="billing" title="Plans and limits">💳 Plan</button>
+      <button class="navbtn" data-view="settings" title="Keys and webhooks">⚙️ Settings</button>
     </nav>
     <div class="sidebar-foot">
       <div id="whoami" class="muted" style="margin-bottom:8px"></div>
@@ -28,7 +32,10 @@
     <section id="view-overview" class="view">
       <h1>Overview</h1>
       <div class="cards" id="statCards"></div>
-      <h2>Live agents</h2>
+      <div class="row-between" style="margin-top:24px">
+        <h2 style="margin:0">Live agents</h2>
+        <button class="btn small" data-goto="analytics">Open analytics →</button>
+      </div>
       <div id="overviewAgents" class="agent-grid"></div>
     </section>
 
@@ -38,15 +45,96 @@
         <h1>Agents</h1>
         <button class="btn primary" id="newAgentBtn">+ New agent</button>
       </div>
-      <div id="agentsList" class="agent-list"></div>
+
+      <div class="toolbar" id="agentToolbar">
+        <input id="agentSearch" placeholder="Search by name, status, model…" aria-label="Search agents">
+        <select id="agentStatusFilter" aria-label="Filter by status">
+          <option value="">All statuses</option>
+          <option value="live">Live</option>
+          <option value="draft">Draft</option>
+          <option value="paused">Paused</option>
+        </select>
+        <select id="agentModelFilter" aria-label="Filter by model">
+          <option value="">All models</option>
+          <option value="openai/gpt-oss-120b">GPT-OSS 120B</option>
+          <option value="openai/gpt-oss-20b">GPT-OSS 20B</option>
+          <option value="qwen/qwen3.8-27b">Qwen 3.8 27B</option>
+          <option value="allam-2-7b">Allam 2 7B</option>
+        </select>
+        <span class="muted" id="agentCount" style="font-size:13px"></span>
+      </div>
+
+      <div id="agentsList" class="agent-grid"></div>
 
       <div id="editor" class="editor hidden">
-        <h2 id="editorTitle">New agent</h2>
+        <div class="row-between">
+          <h2 id="editorTitle" style="margin:0">New agent</h2>
+          <button class="icon-btn" id="closeEditor" title="Close">✕</button>
+        </div>
         <div class="form-grid">
-          <label>Name<input id="fName" maxlength="60" placeholder="Madrasa Assistant"></label>
-          <label>Emoji<input id="fEmoji" value="🤖" maxlength="4"></label>
+          <label>Name<input id="fName" maxlength="60" placeholder="Madrasa Assistant" data-tip="Shown in WhatsApp/Telegram menus"></label>
+          <label>Emoji<input id="fEmoji" value="🤖" maxlength="4" data-tip="One emoji, used on cards and menus"></label>
           <label class="full">Description<input id="fDesc" maxlength="300" placeholder="What does this agent do?"></label>
           <label class="full">System prompt<textarea id="fPrompt" rows="4" placeholder="You are a helpful assistant…"></textarea></label>
+
+          <div class="full split">
+            <div class="card inner">
+              <h3>Personality</h3>
+              <label class="slider">Tone <span class="muted" id="toneLabel">balanced</span>
+                <input type="range" id="fTone" min="1" max="5" value="3" step="1">
+                <span class="slider-scale"><i>formal</i><i>casual</i></span>
+              </label>
+              <label class="slider">Depth <span class="muted" id="depthLabel">clear</span>
+                <input type="range" id="fDepth" min="1" max="5" value="3" step="1">
+                <span class="slider-scale"><i>brief</i><i>scholarly</i></span>
+              </label>
+              <label>Preset
+                <select id="fPreset">
+                  <option value="">Custom</option>
+                  <option value="Formal teacher">Formal teacher</option>
+                  <option value="Friendly helper">Friendly helper</option>
+                  <option value="Classical scholar">Classical scholar</option>
+                  <option value="Customer support">Customer support</option>
+                  <option value="Storyteller">Storyteller</option>
+                </select>
+              </label>
+              <label>Sign-off (optional)<input id="fSignoff" maxlength="60" placeholder="— Zynora AI"></label>
+              <label class="checkline"><input type="checkbox" id="fNoHumor"> No humour or emoji</label>
+            </div>
+            <div class="card inner">
+              <h3>Language</h3>
+              <label class="checkline"><input type="checkbox" id="fAutoLang" checked> Match the language the user writes in</label>
+              <div class="chips" id="langChips"></div>
+              <label style="margin-top:10px">In group chats, reply when
+                <select id="fGroupReply">
+                  <option value="mention">mentioned only</option>
+                  <option value="always">any message</option>
+                </select>
+              </label>
+              <label class="checkline" style="margin-top:10px"><input type="checkbox" id="fKnowledge" checked> Use uploaded knowledge files</label>
+            </div>
+          </div>
+
+          <div class="full card inner" id="promptPreviewCard">
+            <h3>Prompt preview <span class="muted" style="font-weight:400;font-size:12px">style sample, not a model call</span></h3>
+            <div class="preview-chat" id="promptPreview"></div>
+          </div>
+
+          <div class="full card inner" id="knowledgeCard">
+            <div class="row-between" style="margin-bottom:6px">
+              <h3 style="margin:0">Knowledge files</h3>
+              <button class="btn small" id="genFaqBtn" data-tip="Draft Q&A pairs from your files and description">✨ Generate FAQ</button>
+            </div>
+            <p class="muted" style="font-size:13px;margin-bottom:10px">PDF, Word (.docx), CSV, Markdown, HTML or plain text. Agents quote these before their own knowledge.</p>
+            <div id="kbList" class="kb-list"></div>
+            <div class="row-between" style="margin-top:10px;gap:8px">
+              <input type="file" id="kbFile" accept=".pdf,.docx,.txt,.md,.csv,.json,.html" style="flex:1">
+              <button class="btn small" id="kbUploadBtn">Upload</button>
+            </div>
+            <textarea id="kbPaste" rows="3" placeholder="…or paste text here (notes, policies, timetables)" style="margin-top:10px"></textarea>
+            <div class="row-end"><button class="btn small" id="kbPasteBtn">Add pasted text</button></div>
+          </div>
+
           <label class="full">Your own WhatsApp number ID (optional)<input id="fWaPhone" inputmode="numeric" maxlength="24" placeholder="Phone number ID from Meta, e.g. 1096093593595738"></label>
           <label class="full">WhatsApp access token (optional, stored privately)<input id="fWaToken" type="password" autocomplete="off" placeholder="Leave blank to keep the saved token"></label>
           <label>Model
@@ -72,6 +160,97 @@
       </div>
     </section>
 
+    <!-- ANALYTICS -->
+    <section id="view-analytics" class="view hidden">
+      <div class="row-between">
+        <h1>Analytics</h1>
+        <select id="analyticsRange" aria-label="Range">
+          <option value="7">Last 7 days</option>
+          <option value="14" selected>Last 14 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </div>
+      <div class="cards" id="analyticsTiles"></div>
+      <h2>Messages per day</h2>
+      <div class="chart" id="analyticsChart"></div>
+      <div class="split" style="margin-top:22px">
+        <div class="card inner">
+          <h3>By agent</h3>
+          <div id="analyticsAgents" class="table-wrap"></div>
+        </div>
+        <div class="card inner">
+          <h3>Top questions</h3>
+          <div id="analyticsQueries" class="table-wrap"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- REMINDERS -->
+    <section id="view-reminders" class="view hidden">
+      <h1>Reminders</h1>
+      <p class="muted">Your agents push these to WhatsApp or Telegram on schedule, even when you are away. On Telegram a subscriber can also type <code>/remind 30m drink water</code>.</p>
+      <div class="card">
+        <div class="form-grid">
+          <label>Title<input id="remTitle" placeholder="Fajr reminder" maxlength="120"></label>
+          <label>When<input type="datetime-local" id="remWhen"></label>
+          <label class="full">Message<textarea id="remMessage" rows="2" placeholder="Assalamu alaikum — Fajr is in 20 minutes."></textarea></label>
+          <label>Channel
+            <select id="remChannel"><option value="telegram">Telegram</option><option value="whatsapp">WhatsApp</option></select>
+          </label>
+          <label>Repeat
+            <select id="remRepeat"><option value="none">Once</option><option value="daily">Every day</option><option value="weekly">Every week</option></select>
+          </label>
+          <label class="full">Chat id / phone number<input id="remChat" placeholder="Telegram chat id (e.g. 123456789) or WhatsApp number +233…"></label>
+          <label class="full">Agent (optional)
+            <select id="remAgent"><option value="">None</option></select>
+          </label>
+        </div>
+        <div class="row-end"><button class="btn primary" id="addReminder">Schedule reminder</button></div>
+      </div>
+      <div id="reminderList" class="stack"></div>
+    </section>
+
+    <!-- TRIGGERS -->
+    <section id="view-triggers" class="view hidden">
+      <h1>Triggers</h1>
+      <p class="muted">Watch any JSON feed (weather, news, a school calendar, your own API) and let an agent message the chat when something changes.</p>
+      <div class="card">
+        <div class="form-grid">
+          <label>Name<input id="trgName" placeholder="Rain warning for Tarkwa" maxlength="90"></label>
+          <label>Source URL (JSON)<input id="trgUrl" placeholder="https://api.example.com/weather"></label>
+          <label>Field path<input id="trgPath" placeholder="daily[0].precip_probability" data-tip="Dot path into the JSON, e.g. main.temp"></label>
+          <label>Fire when
+            <select id="trgCond">
+              <option value="changed">value changes</option>
+              <option value="> 60">greater than 60</option>
+              <option value="< 20">less than 20</option>
+              <option value="always">every check</option>
+            </select>
+          </label>
+          <label>Check every
+            <select id="trgEvery">
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="60" selected>1 hour</option>
+              <option value="360">6 hours</option>
+              <option value="1440">1 day</option>
+            </select>
+          </label>
+          <label>Channel
+            <select id="trgChannel"><option value="telegram">Telegram</option><option value="whatsapp">WhatsApp</option></select>
+          </label>
+          <label class="full">What the agent should say<input id="trgPrompt" placeholder="Warn the family group if rain is likely, in one sentence." maxlength="600"></label>
+          <label>Chat id / phone<input id="trgChat" placeholder="123456789 or +233…"></label>
+          <label>Agent
+            <select id="trgAgent"><option value="">None</option></select>
+          </label>
+        </div>
+        <div class="row-end"><button class="btn primary" id="addTrigger">Create trigger</button></div>
+      </div>
+      <div id="triggerList" class="stack"></div>
+    </section>
+
     <!-- CHANNELS -->
     <section id="view-channels" class="view hidden">
       <h1>Channels</h1>
@@ -79,6 +258,26 @@
       <h2>Per-agent channels</h2>
       <p class="muted">Toggle which platforms each agent answers on. WhatsApp and Telegram are live webhook receivers on this server.</p>
       <div id="channelsList"></div>
+    </section>
+
+    <!-- BILLING -->
+    <section id="view-billing" class="view hidden">
+      <h1>Plan</h1>
+      <div class="plans" id="planCards"></div>
+      <p class="muted" id="billingNote" style="margin-top:12px"></p>
+      <div id="billingFounder" class="card hidden" style="margin-top:18px">
+        <h3>Payment link (founder)</h3>
+        <p class="muted" style="font-size:13px">Paste the checkout link from Paystack, Stripe or your bank. The Upgrade button opens it; nothing is charged by AgentX itself.</p>
+        <div class="form-grid">
+          <label>Provider<input id="billProvider" placeholder="paystack"></label>
+          <label>Price (GHS)<input id="billPrice" type="number" min="1" placeholder="25"></label>
+          <label class="full">Checkout link<input id="billLink" placeholder="https://paystack.com/pay/…"></label>
+          <label class="full">Note shown to users<input id="billNoteInput" placeholder="Pay 25 GHS to 024…, then message us for activation."></label>
+        </div>
+        <div class="row-end"><button class="btn primary" id="saveBilling">Save payment settings</button></div>
+      </div>
+      <h2>Upgrade requests</h2>
+      <div id="upgradeRequests" class="stack"></div>
     </section>
 
     <!-- SETTINGS -->
@@ -98,6 +297,19 @@
   </main>
 </div>
 
+<!-- QUICK EDIT -->
+<div id="quickEdit" class="modal hidden">
+  <div class="modal-box">
+    <h3 style="margin-bottom:12px">Quick edit</h3>
+    <label class="stacklabel">Emoji<input id="qeEmoji" maxlength="4" style="width:80px"></label>
+    <label class="stacklabel">Name<input id="qeName" maxlength="60"></label>
+    <div class="row-end">
+      <button class="btn" id="qeCancel">Cancel</button>
+      <button class="btn primary" id="qeSave">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- TEST CHAT -->
 <div id="chatDock" class="chat-dock hidden">
   <div class="chat-head">
@@ -106,8 +318,22 @@
   </div>
   <div class="chat-body" id="chatBody"></div>
   <div class="chat-input">
+    <button class="icon-btn mic" id="chatMic" title="Hold to speak">🎙️</button>
     <input id="chatText" placeholder="Test your agent…">
     <button class="btn primary" id="chatSend">Send</button>
+  </div>
+  <div class="chat-foot muted" id="chatFoot"></div>
+</div>
+
+<div id="coach" class="coach hidden">
+  <div class="coach-box">
+    <h3>Quick tour</h3>
+    <ol>
+      <li>Cards hold your agents. Drag the ⠿ handle to reorder them.</li>
+      <li>Pencil edits name and emoji without leaving the page. The switches turn WhatsApp and Telegram on.</li>
+      <li>Open an agent to set personality, languages and knowledge files.</li>
+    </ol>
+    <div class="row-end"><button class="btn primary" id="coachDone">Got it</button></div>
   </div>
 </div>
 
