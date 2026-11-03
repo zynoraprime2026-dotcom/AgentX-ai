@@ -195,6 +195,12 @@ const store = {
       return { id: u.id, email: u.email, name: u.name, founder: Boolean(u.founder), createdAt: u.createdAt, agents };
     });
   },
+  async updateUserPass(id, pass) {
+    if (pool) { await pool.query('UPDATE agx_users SET pass=$2 WHERE id=$1', [id, pass]); return true; }
+    const all = readJson(path.join(DATA_DIR, 'users.json'), {});
+    if (all[id]) { all[id].pass = pass; writeJson(path.join(DATA_DIR, 'users.json'), all); return true; }
+    return false;
+  },
   async deleteUser(id) {
     if (pool) {
       await pool.query('DELETE FROM agx_sessions WHERE user_data->>\'id\'=$1', [id]);
@@ -328,5 +334,10 @@ const store = {
   }
 };
 module.exports = store;
+// store replaces module.exports, so the poolRef assigned in initPg is lost unless the
+// getter is re-attached here. Without it lib/docs.js sees no pool and silently falls
+// back to JSON files on Postgres deployments: no agx_docs table, reminders and
+// knowledge lost on restart.
+Object.defineProperty(store, 'poolRef', { get: () => pool });
 Object.defineProperty(store, 'HAS_PG', { get: () => Boolean(pool) });
 Object.defineProperty(store, 'lastDbError', { get: () => lastDbError });

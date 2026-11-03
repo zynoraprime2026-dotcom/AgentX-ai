@@ -47,7 +47,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/telegram/status', '/cron/fajr', '/cron/tick'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 function hashPassword(pw, salt) {
@@ -115,6 +115,36 @@ api.post('/auth/login', rateLimit(10, 900e3), async (req, res) => {
   res.json({ ok: true, user: sess.user });
 });
 
+// Founder-key recovery: no email provider is involved, so the founder key is the
+// reset channel. This is the only way back in for an account whose password is lost.
+api.post('/auth/recover', rateLimit(6, 3600e3), async (req, res) => {
+  const { email, founderKey, password } = req.body || {};
+  const em = String(email || '').trim().toLowerCase();
+  if (String(password || '').length < 6) return res.status(400).json({ error: 'new password must be at least 6 characters' });
+  if (!process.env.ADMIN_KEY) return res.status(503).json({ error: 'Password recovery needs ADMIN_KEY to be set on the server' });
+  if (String(founderKey || '') !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'that founder key is not correct' });
+  const u = await db.findUserByEmail(em);
+  if (!u) return res.status(404).json({ error: 'no account with that email' });
+  await db.updateUserPass(u.id, hashPassword(password));
+  const token = crypto.randomBytes(24).toString('hex');
+  const sess = { user: { id: u.id, email: u.email, name: u.name, founder: Boolean(u.founder) }, expires: new Date(Date.now() + 30 * 864e5).toISOString() };
+  await db.putSession(token, sess);
+  res.setHeader('Set-Cookie', 'agx_sess=' + token + '; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax');
+  res.json({ ok: true, user: sess.user });
+});
+
+api.post('/auth/password', async (req, res) => {
+  const { current, next } = req.body || {};
+  const [, sess] = await loadSession(req);
+  if (!sess) return res.status(401).json({ error: 'login required' });
+  if (String(next || '').length < 6) return res.status(400).json({ error: 'new password must be at least 6 characters' });
+  const u = await db.findUserByEmail(sess.user.email);
+  if (!u) return res.status(404).json({ error: 'account not found' });
+  if (!checkPassword(current, u.pass)) return res.status(403).json({ error: 'current password is wrong' });
+  await db.updateUserPass(u.id, hashPassword(next));
+  res.json({ ok: true });
+});
+
 api.post('/auth/logout', async (req, res) => {
   const m = /agx_sess=([a-f0-9]+)/.exec(req.headers.cookie || '');
   if (m) await db.delSession(m[1]);
@@ -173,6 +203,11 @@ api.get('/agents', async (req, res) => {
 api.post('/agents', async (req, res) => {
   const { name, emoji, description, systemPrompt, model, persona, languages, autoLanguage, groupReply } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name is required' });
+  const mine = (await db.listAgents()).filter(x => x.ownerId === req.user.id);
+  const plan = await suite.planFor(req.user).catch(() => null);
+  if (plan && mine.length >= plan.limits.agents) {
+    return res.status(402).json({ error: 'Your ' + plan.name + ' plan allows ' + plan.limits.agents + ' agents. Upgrade for more.', upgrade: true });
+  }
   const agent = {
     id: uid(), name: String(name).trim().slice(0, 60),
     emoji: (emoji || '🤖').slice(0, 4), description: String(description || '').slice(0, 300),
@@ -183,7 +218,8 @@ api.post('/agents', async (req, res) => {
     languages: Array.isArray(languages) ? languages.slice(0, 8) : [],
     autoLanguage: autoLanguage !== false,
     groupReply: groupReply === 'always' ? 'always' : 'mention',
-    sortOrder: (await db.listAgents()).filter(x => x.ownerId === req.user.id).length,
+    sortOrder: mine.length,
+    knowledgeEnabled: req.body && req.body.knowledgeEnabled === false ? false : true,
     status: 'draft', createdAt: new Date().toISOString(), messagesHandled: 0, ownerId: req.user.id
   };
   await db.insertAgent(agent);
@@ -767,6 +803,17 @@ function captionClean(text) {
     .trim();
 }
 
+// Meta keeps media behind a two-step URL that needs the same access token.
+async function waMedia(mediaId, phoneId, token) {
+  const pid = phoneId || WA_PHONE_ID, tok = token || WA_TOKEN;
+  if (!pid || !tok) throw new Error('WhatsApp is not connected');
+  const meta = await (await fetch(`https://graph.facebook.com/v21.0/${mediaId}`, { headers: { Authorization: 'Bearer ' + tok } })).json();
+  if (!meta || !meta.url) throw new Error((meta && meta.error && meta.error.message) || 'media lookup failed');
+  const r = await fetch(meta.url, { headers: { Authorization: 'Bearer ' + tok } });
+  if (!r.ok) throw new Error('media download failed (' + r.status + ')');
+  return Buffer.from(await r.arrayBuffer());
+}
+
 async function waSendImage(to, imageUrl, caption, phoneId, token) {
   const pid = phoneId || WA_PHONE_ID, tok = token || WA_TOKEN;
   if (!pid || !tok) return;
@@ -806,9 +853,27 @@ async function handleWa(req) {
   const liveWa = a => a.status === 'live' && a.platforms && a.platforms.whatsapp && a.platforms.whatsapp.enabled;
   const linked = agents.find(a => a.waPhoneId && a.waPhoneId === toPhoneId && liveWa(a));
   const linkedToken = linked ? await db.getAgentToken(linked.id) : '';
+  const chatTarget = msg.group_id || from;
   const reply = (t) => waSend(chatTarget, t, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
-  if (msg.type !== 'text') { console.log('[WA in ] non-text', msg.type); return reply('I can only read text messages for now. Please type your question.'); }
-  const text = (msg.text && msg.text.body || '').trim();
+  let text = '';
+  if (msg.type === 'text') {
+    text = (msg.text && msg.text.body || '').trim();
+  } else if (msg.type === 'audio' || msg.type === 'voice') {
+    const pid = linked ? linked.waPhoneId : WA_PHONE_ID;
+    const tok = linked ? linkedToken : WA_TOKEN;
+    try {
+      const buf = await waMedia(msg[msg.type].id, pid, tok);
+      text = await suite.transcribeBuffer(buf, msg[msg.type].mime_type || 'audio/ogg');
+      console.log('[WA voice]', String(text).slice(0, 100));
+      if (!text) return reply('I could not hear that clearly. Please type it or send the voice note again.');
+    } catch (e) {
+      console.log('[WA voice err]', String(e.message).slice(0, 160));
+      return reply('I could not read that voice note. Please type your question instead.');
+    }
+  } else {
+    console.log('[WA in ] non-text', msg.type);
+    return reply('I can read text and voice notes. Please type your question or send a voice note.');
+  }
   console.log('[WA in ]', toPhoneId, from, String(text).slice(0, 100));
   if (!text) return;
   const hkey = toPhoneId + ':' + from;
@@ -835,7 +900,6 @@ async function handleWa(req) {
   }
   if (!agent) return;
   const isGroup = Boolean(msg.group_id || /@g\.us$/i.test(String(msg.group_id || '')) || /@g\.us$/i.test(String(from)));
-  const chatTarget = msg.group_id || from;
   if (isGroup) {
     const allowed = suite.shouldAnswerGroup({ isGroup: true, mode: agent.groupReply, text, botNames: [agent.name, 'agentx'] });
     if (!allowed) { console.log('[WA group] not addressed, staying silent'); return; }

@@ -48,6 +48,7 @@ $$('.logintab').forEach(t => t.onclick = () => {
   t.classList.add('active');
   $('#signinForm').style.display = t.dataset.tab === 'signin' ? 'flex' : 'none';
   $('#signupForm').style.display = t.dataset.tab === 'signup' ? 'flex' : 'none';
+  $('#recoverForm').style.display = t.dataset.tab === 'recover' ? 'flex' : 'none';
 });
 $('#loginBtn').onclick = async () => {
   try { await api('/auth/login', { method: 'POST', body: { email: $('#loginEmail').value, password: $('#loginPass').value } }); location.reload(); }
@@ -62,6 +63,21 @@ $('#registerBtn').onclick = async () => {
     location.reload();
   } catch (e) { $('#loginErr').textContent = e.message; }
 };
+$('#recoverBtn').onclick = async () => {
+  try {
+    await api('/auth/recover', { method: 'POST', body: { email: $('#recEmail').value.trim(), founderKey: $('#recKey').value.trim(), password: $('#recPass').value } });
+    location.reload();
+  } catch (e) { $('#loginErr').textContent = e.message; }
+};
+
+$('#changePwBtn').onclick = async () => {
+  try {
+    await api('/auth/password', { method: 'POST', body: { current: $('#pwCurrent').value, next: $('#pwNext').value } });
+    $('#pwCurrent').value = ''; $('#pwNext').value = '';
+    toast('Password updated');
+  } catch (e) { toast(e.message); }
+};
+
 $('#logoutBtn').onclick = async () => {
   try { await api('/auth/logout', { method: 'POST' }); } catch (e) {}
   location.reload();
