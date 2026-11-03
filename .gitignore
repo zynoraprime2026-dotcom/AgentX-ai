@@ -6,3 +6,4 @@ data/tg_history.json
 data/agent_secrets.json
 data/subscribers.json
 data/subs_sent.json
+data/docs-*.json

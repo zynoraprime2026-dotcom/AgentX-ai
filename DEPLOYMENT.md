@@ -21,6 +21,16 @@ Root directory: leave as `/`. The build is automatic (plain Node app, no build s
   It sends every Telegram subscriber their Fajr time for their city plus a morning dua.
 - Telegram: set the webhook to `https://<your-app>.vercel.app/webhook/telegram` (BotFather or the dashboard's Telegram page).
 
+## 4. Reminders and triggers need a tick
+Reminders and event triggers are delivered by a background tick:
+
+- **Long-running hosts (Render, Railway, VPS):** nothing to do. The app runs an in-process ticker every 60 seconds.
+- **Vercel:** serverless functions cannot keep a timer, so point any scheduler at `GET /api/cron/tick` with `Authorization: Bearer <CRON_SECRET>` every 5 minutes (cron-job.org, GitHub Actions, or a Vercel Pro cron entry — Hobby only allows daily crons). The daily Fajr cron already runs a tick, so a reminder can be up to a day late without it.
+- Set `AGX_DISABLE_TICKER=1` if you run several instances and only want the external scheduler to deliver.
+
+## 5. Voice
+Speech-to-text and text-to-speech use the Groq key already configured (`whisper-large-v3-turbo` and `playai-tts`). Voice replies in the dashboard are a Pro feature; spoken answers fall back to the browser's own speech synthesis when the server voice is unavailable.
+
 ## Notes
 - Deploys from this repo work with automatic Git deploys (the gitSource block that blocked the Noor project does not apply here; if a deploy arrives blocked, use Redeploy).
 - Local test: `npm install && node server.js` → http://localhost:3100
