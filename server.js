@@ -711,18 +711,6 @@ api.get('/admin/stats', async (req, res) => {
     dbError: db.lastDbError ? db.lastDbError.slice(0, 300) : null
   });
 });
-api.get('/admin/export', async (req, res) => {
-  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
-  const p = require('./db').poolRef;
-  if (!p) return res.status(400).json({ error: 'no postgres' });
-  const tables = ['agx_users','agx_agents','agx_agent_secrets','agx_sessions','agx_settings','agx_subscribers','agx_subs_sent','agx_hist','agx_profiles'];
-  const out = {};
-  for (const t of tables) {
-    try { out[t] = (await p.query('SELECT * FROM ' + t)).rows; }
-    catch (e) { out[t] = { error: String(e).slice(0, 150) }; }
-  }
-  res.json(out);
-});
 api.post('/admin/dbdebug', async (req, res) => {
   const byKey = !(req.user && req.user.founder) && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
   if (!byKey) return res.status(403).json({ error: 'admin key required' });
