@@ -575,6 +575,7 @@ async function groqAsk(agent, history, ctx) {
     const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
+      signal: AbortSignal.timeout(90000),
       body: JSON.stringify({
         model: agent.model,
         messages,
@@ -650,18 +651,25 @@ function tgFormat(text) {
 async function tgSend(chatId, text) {
   const chunks = tgFormat(text).match(/[\s\S]{1,3800}(?!\S)/) || [tgFormat(text)];
   for (const c of chunks) {
-    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: c })
-    });
+      body: JSON.stringify({ chat_id: chatId, text: c }),
+      signal: AbortSignal.timeout(15000)
+    }).catch((e) => { console.log('[tg send]', String(e.message).slice(0, 120)); return null; });
+    if (r && !r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error('telegram: ' + ((d.description || r.status) + '').slice(0, 120));
+    }
   }
 }
 
 async function tgSendPhoto(chatId, photoUrl, caption) {
-  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendPhoto`, {
+  const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendPhoto`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, photo: photoUrl, caption: captionClean(caption).slice(0, 1000) })
-  });
+    body: JSON.stringify({ chat_id: chatId, photo: photoUrl, caption: captionClean(caption).slice(0, 1000) }),
+    signal: AbortSignal.timeout(20000)
+  }).catch((e) => { console.log('[tg photo]', String(e.message).slice(0, 120)); return null; });
+  if (r && !r.ok) console.log('[tg photo] failed', r.status);
 }
 
 // A Telegram voice note: download it, transcribe with Whisper, then answer as if typed.
@@ -670,7 +678,7 @@ async function handleTgVoice(msg) {
   if (!chatId || !TG_TOKEN) return;
   const fileId = msg.voice && msg.voice.file_id;
   if (!fileId) return;
-  const info = await (await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`)).json();
+  const info = await (await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`, { signal: AbortSignal.timeout(15000) })).json();
   const filePath = info && info.result && info.result.file_path;
   if (!filePath) return tgSend(chatId, 'I could not fetch that voice note.');
   const audio = await fetch(`https://api.telegram.org/file/bot${TG_TOKEN}/${filePath}`);
@@ -787,11 +795,16 @@ const waChoice = new Map(); // shared-number users: sender -> chosen agent id (t
 async function waSend(to, text, phoneId, token) {
   const pid = phoneId || WA_PHONE_ID, tok = token || WA_TOKEN;
   if (!pid || !tok) return; // not configured yet
-  await fetch(`https://graph.facebook.com/v21.0/${pid}/messages`, {
+  const r = await fetch(`https://graph.facebook.com/v21.0/${pid}/messages`, {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: String(text).slice(0, 3800) } })
-  });
+    body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: String(text).slice(0, 3800) } }),
+    signal: AbortSignal.timeout(15000)
+  }).catch((e) => { console.log('[wa send]', String(e.message).slice(0, 120)); return null; });
+  if (r && !r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error('whatsapp: ' + ((d.error && d.error.message) || r.status + '').slice(0, 120));
+  }
 }
 
 function captionClean(text) {
@@ -821,9 +834,9 @@ async function waSendImage(to, imageUrl, caption, phoneId, token) {
   if (caption) body.image.caption = captionClean(caption).slice(0, 900);
   const r = await fetch(`https://graph.facebook.com/v21.0/${pid}/messages`, {
     method: 'POST', headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!r.ok) console.log('[WA img err]', (await r.text()).slice(0, 160));
+    body: JSON.stringify(body), signal: AbortSignal.timeout(20000)
+  }).catch((e) => { console.log('[wa img]', String(e.message).slice(0, 120)); return null; });
+  if (r && !r.ok) console.log('[WA img err]', (await r.text()).slice(0, 160));
 }
 
 app.get('/webhook/whatsapp', (req, res) => {
