@@ -713,7 +713,7 @@ api.get('/admin/stats', async (req, res) => {
 });
 api.get('/admin/export', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
-  const p = require('./db').pool();
+  const p = require('./db').poolRef;
   if (!p) return res.status(400).json({ error: 'no postgres' });
   const tables = ['agx_users','agx_agents','agx_agent_secrets','agx_sessions','agx_settings','agx_subscribers','agx_subs_sent','agx_hist','agx_profiles'];
   const out = {};
