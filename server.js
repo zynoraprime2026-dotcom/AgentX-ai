@@ -540,7 +540,7 @@ async function tgSend(chatId, text) {
 async function tgSendPhoto(chatId, photoUrl, caption) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendPhoto`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, photo: photoUrl, caption: String(caption || '').slice(0, 1000) })
+    body: JSON.stringify({ chat_id: chatId, photo: photoUrl, caption: captionClean(caption).slice(0, 1000) })
   });
 }
 
@@ -629,11 +629,20 @@ async function waSend(to, text, phoneId, token) {
   });
 }
 
+function captionClean(text) {
+  return String(text || '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
+
 async function waSendImage(to, imageUrl, caption, phoneId, token) {
   const pid = phoneId || WA_PHONE_ID, tok = token || WA_TOKEN;
   if (!pid || !tok) return;
   const body = { messaging_product: 'whatsapp', to, type: 'image', image: { link: imageUrl } };
-  if (caption) body.image.caption = String(caption).slice(0, 900);
+  if (caption) body.image.caption = captionClean(caption).slice(0, 900);
   const r = await fetch(`https://graph.facebook.com/v21.0/${pid}/messages`, {
     method: 'POST', headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
