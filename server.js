@@ -52,6 +52,8 @@ const crypto = require('crypto');
 const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
+const keepAlive = { on: false, url: '', everyMinutes: 10 };
+
 function hashPassword(pw, salt) {
   salt = salt || crypto.randomBytes(12).toString('hex');
   const h = crypto.scryptSync(String(pw), salt, 32).toString('hex');
@@ -171,6 +173,7 @@ api.get('/status', async (req, res) => {
     ilmConnected: Boolean(process.env.ILM_API_KEY || ((await db.getSettings()).ilmApiKey || '')),
     studioConnected: Boolean(process.env.STUDIO_API_KEY),
     turathConnected: Boolean(process.env.TURATH_API_KEY),
+    keepAlive: keepAlive.on ? { on: true, everyMinutes: keepAlive.everyMinutes, url: keepAlive.url } : { on: false },
     storage: db.HAS_PG ? 'postgres' : 'files',
     adminAuth: Boolean(process.env.ADMIN_KEY)
   });
@@ -1218,7 +1221,9 @@ if (process.env.VERCEL) {
     // start (or timed out). A gentle self-ping keeps it warm. Set AGX_KEEPALIVE=0
     // to switch it off.
     const KEEPALIVE_URL = process.env.AGX_SELF_URL || process.env.RENDER_EXTERNAL_URL || '';
+    keepAlive.url = KEEPALIVE_URL;
     if (KEEPALIVE_URL && process.env.AGX_KEEPALIVE !== '0') {
+      keepAlive.on = true;
       setInterval(() => {
         fetch(KEEPALIVE_URL.replace(/\/$/, '') + '/api/status', { signal: AbortSignal.timeout(20000) })
           .catch(() => {});
