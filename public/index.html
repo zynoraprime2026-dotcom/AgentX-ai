@@ -46,6 +46,20 @@
         <button class="btn primary" id="newAgentBtn">+ New agent</button>
       </div>
 
+      <div class="draft-box" id="draftBox">
+        <div class="row-between">
+          <strong>Describe an agent</strong>
+          <span class="muted" id="draftMeter" style="font-size:13px"></span>
+        </div>
+        <textarea id="draftInput" rows="2" maxlength="600"
+          placeholder="e.g. A Hausa-speaking tutor for secondary students that answers fiqh questions and cites its sources"></textarea>
+        <div class="row-between">
+          <span class="muted" style="font-size:12px">You get a draft to edit. Nothing is created until you tap Create.</span>
+          <button class="btn primary" id="draftBtn">Draft it</button>
+        </div>
+        <div id="draftResult" class="hidden"></div>
+      </div>
+
       <div class="toolbar" id="agentToolbar">
         <input id="agentSearch" placeholder="Search by name, status, model…" aria-label="Search agents">
         <select id="agentStatusFilter" aria-label="Filter by status">
