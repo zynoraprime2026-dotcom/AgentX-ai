@@ -237,6 +237,87 @@ function wireDragAndDrop() {
   if (el) el.addEventListener(ev, () => renderAgents());
 });
 
+// ---------- describe an agent ----------
+// A description becomes a draft the person edits, never an agent: the model is good
+// at the shape of a role and bad at knowing which tools it truly needs.
+const DRAFT_TOOL_LABELS = { ilm: 'Islamic lookups', turath: 'Manuscripts', shop: 'Shop & orders', profile: 'Customer memory', studio: 'Film & video' };
+
+function wireDraftBox() {
+  const btn = $('#draftBtn');
+  const input = $('#draftInput');
+  if (!btn || !input || btn.dataset.wired) return;
+  btn.dataset.wired = '1';
+  btn.onclick = async () => {
+    const description = String(input.value || '').trim();
+    if (description.length < 8) return toast('Describe what it should do, in a sentence or two.');
+    btn.disabled = true; btn.textContent = 'Drafting…';
+    try {
+      const r = await api('/agents/draft', { method: 'POST', body: { description } });
+      renderDraft(r.draft, r.remaining);
+    } catch (e) { toast(e.message); }
+    finally { btn.disabled = false; btn.textContent = 'Draft it'; }
+  };
+}
+
+function renderDraft(d, remaining) {
+  const box = $('#draftResult');
+  if (!box || !d) return;
+  const meter = $('#draftMeter');
+  if (meter && remaining !== null && remaining !== undefined) {
+    meter.textContent = remaining + ' draft' + (remaining === 1 ? '' : 's') + ' left today';
+  }
+  const checked = new Set(d.toolsets || []);
+  const tools = Object.keys(DRAFT_TOOL_LABELS).map(k =>
+    `<label><input type="checkbox" value="${k}"${checked.has(k) ? ' checked' : ''}> ${DRAFT_TOOL_LABELS[k]}</label>`).join('');
+  const qs = (d.sampleQuestions || []).length
+    ? `<div><span class="muted" style="font-size:12px">What it will be asked</span><ul class="draft-qs">${d.sampleQuestions.map(q => `<li>${esc(q)}</li>`).join('')}</ul></div>`
+    : '';
+  box.classList.remove('hidden');
+  box.innerHTML = `<div class="draft-card">
+    <div class="row-between">
+      <strong>${d.generated ? 'Draft' : 'Draft (written from your words, the model was busy)'}</strong>
+      <span class="muted" style="font-size:12px">${d.needsKnowledge ? 'Needs a knowledge doc to be good' : 'No knowledge doc needed'}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:70px 1fr;gap:10px">
+      <label>Emoji<input id="draftEmoji" value="${esc(d.emoji || '🤖')}" maxlength="4"></label>
+      <label>Name<input id="draftName" value="${esc(d.name || '')}" maxlength="60"></label>
+    </div>
+    <label>What it does<input id="draftDesc" value="${esc(d.description || '')}" maxlength="300"></label>
+    <label>Instructions<textarea id="draftPrompt" rows="7">${esc(d.systemPrompt || '')}</textarea></label>
+    <div><span class="muted" style="font-size:12px">Tools it gets</span><div class="draft-tools">${tools}</div></div>
+    ${qs}
+    <div class="row-between">
+      <button class="btn" id="draftDiscard">Discard</button>
+      <button class="btn primary" id="draftCreate">Create agent</button>
+    </div>
+  </div>`;
+  $('#draftDiscard').onclick = () => { box.classList.add('hidden'); box.innerHTML = ''; };
+  $('#draftCreate').onclick = async () => {
+    const name = String($('#draftName').value || '').trim();
+    if (!name) return toast('Give it a name first.');
+    const toolsets = [...box.querySelectorAll('.draft-tools input:checked')].map(i => i.value);
+    const btn = $('#draftCreate');
+    btn.disabled = true; btn.textContent = 'Creating…';
+    try {
+      await api('/agents', { method: 'POST', body: {
+        name,
+        emoji: String($('#draftEmoji').value || '🤖').trim().slice(0, 4) || '🤖',
+        description: String($('#draftDesc').value || '').trim().slice(0, 300),
+        systemPrompt: String($('#draftPrompt').value || '').trim().slice(0, 4000),
+        toolsets,
+        source: 'builder'
+      } });
+      box.classList.add('hidden'); box.innerHTML = '';
+      const input = $('#draftInput'); if (input) input.value = '';
+      await load();
+      toast(name + ' created as a draft');
+    } catch (e) {
+      toast(e.message);
+      btn.disabled = false; btn.textContent = 'Create agent';
+    }
+  };
+}
+
 // ---------- quick edit ----------
 let quickId = null;
 function openQuickEdit(id) {
@@ -810,6 +891,7 @@ async function load() {
   agents = await api('/agents');
   renderOverview();
   renderAgents();
+  wireDraftBox();
   renderChannels();
   fillAgentSelect('#remAgent');
   fillAgentSelect('#trgAgent');

@@ -193,3 +193,13 @@ input[type=range] { padding: 0; accent-color: var(--accent); }
 .chat-cmds button { font:inherit; font-size:11px; padding:4px 9px; border-radius:999px;
   border:1px solid rgba(148,163,184,.35); background:rgba(148,163,184,.10); color:inherit; cursor:pointer; }
 .chat-cmds button:hover { background:rgba(148,163,184,.22); }
+
+/* describe an agent */
+.draft-box { border: 1px solid var(--line, #2a2f3a); border-radius: 12px; padding: 14px; margin: 14px 0; display: grid; gap: 10px; }
+.draft-box textarea { width: 100%; resize: vertical; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line, #2a2f3a); background: transparent; color: inherit; font: inherit; }
+.draft-card { border: 1px dashed var(--line, #2a2f3a); border-radius: 12px; padding: 14px; display: grid; gap: 10px; }
+.draft-card label { display: grid; gap: 4px; font-size: 12px; }
+.draft-card input, .draft-card textarea { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line, #2a2f3a); background: transparent; color: inherit; font: inherit; }
+.draft-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.draft-tools label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; border: 1px solid var(--line, #2a2f3a); border-radius: 999px; padding: 4px 10px; }
+.draft-qs { margin: 0; padding-left: 18px; font-size: 13px; }

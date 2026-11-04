@@ -6,6 +6,7 @@ const path = require('path');
 const db = require('./db');
 const suite = require('./lib/suite');
 const providers = require('./lib/providers');
+const docs = require('./lib/docs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -326,6 +327,93 @@ api.get('/agents', async (req, res) => {
   res.json(await Promise.all(mine.map(publicAgent)));
 });
 
+// ---------- describe an agent ----------
+// A description becomes a draft, never an agent. One wrong sentence should cost an
+// edit, not a bad agent answering on every channel it is switched on for.
+const DRAFT_DAILY_CAP = 3;
+const DRAFT_TOOLSETS = ['ilm', 'shop', 'profile', 'studio', 'turath'];
+
+function draftFallback(text) {
+  // A readable name from their own words: drop the article, keep the role words,
+  // and never end on a joining word ("A Hausa tutor for" reads like a truncation).
+  const words = text.replace(/[^\p{L}\p{N}\s'-]/gu, ' ').trim().split(/\s+/).filter(Boolean);
+  while (words.length && /^(a|an|the|my|our)$/i.test(words[0])) words.shift();
+  const stop = /^(for|that|to|with|and|which|who|of|on|in|about|by)$/i;
+  const kept = [];
+  for (const w of words) { if (kept.length >= 3) break; if (stop.test(w)) break; kept.push(w); }
+  const short = (kept.join(' ') || 'New agent').replace(/\b\w/g, (c) => c.toUpperCase()).slice(0, 40);
+  return {
+    name: short,
+    emoji: '🤖',
+    description: text.slice(0, 160),
+    systemPrompt: 'You are ' + text.replace(/\s+/g, ' ').slice(0, 300)
+      + ' Answer in short, clear messages, stay in that role, and say plainly when you are unsure or when the answer needs a human.',
+    toolsets: inferToolsets({ name: short, description: text }),
+    needsKnowledge: false,
+    sampleQuestions: [],
+    generated: false
+  };
+}
+
+function parseDraft(raw) {
+  const text = String(raw || '').replace(/```(?:json)?/gi, '').trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  let d;
+  try { d = JSON.parse(text.slice(start, end + 1)); } catch (e) { return null; }
+  if (!d || typeof d !== 'object') return null;
+  const name = String(d.name || '').trim().slice(0, 60);
+  if (!name) return null;
+  const tools = [...new Set((Array.isArray(d.toolsets) ? d.toolsets : []).map((k) => String(k).toLowerCase()))]
+    .filter((k) => DRAFT_TOOLSETS.includes(k));
+  return {
+    name,
+    emoji: String(d.emoji || '🤖').slice(0, 4),
+    description: String(d.description || '').slice(0, 300),
+    systemPrompt: String(d.systemPrompt || '').slice(0, 4000),
+    toolsets: tools,
+    needsKnowledge: Boolean(d.needsKnowledge),
+    sampleQuestions: (Array.isArray(d.sampleQuestions) ? d.sampleQuestions : []).map((q) => String(q).slice(0, 140)).slice(0, 3),
+    generated: true
+  };
+}
+
+api.post('/agents/draft', async (req, res) => {
+  const text = String((req.body && req.body.description) || '').trim().slice(0, 600);
+  if (text.length < 8) return res.status(400).json({ error: 'Describe what the agent should do, in a sentence or two.' });
+  const day = new Date().toISOString().slice(0, 10);
+  const used = await docs.count('events', { kind: 'agent_draft', day, ownerId: req.user.id }).catch(() => 0);
+  if (!req.user.founder && used >= DRAFT_DAILY_CAP) {
+    return res.status(429).json({ error: 'That is ' + DRAFT_DAILY_CAP + ' drafts today. Edit one of them, or come back tomorrow.' });
+  }
+  const settings = await db.getSettings();
+  const key = (settings.groqApiKey && settings.groqApiKey.startsWith('gsk_')) ? settings.groqApiKey : (process.env.GROQ_API_KEY || '');
+  const brief = [
+    'You design AI agents. Reply with JSON only: no prose, no code fence.',
+    'Shape: {"name":string max 4 words, "emoji":string one emoji, "description":string max 160 chars,',
+    '"systemPrompt":string 110-170 words written in the second person, naming the role, the tone, what it must refuse to do, and that it must say when it is unsure,',
+    '"toolsets":array chosen from ' + JSON.stringify(DRAFT_TOOLSETS) + ',',
+    '"needsKnowledge":boolean, "sampleQuestions":array of exactly 3 short questions a real user would ask}',
+    'Toolsets: ilm = prayer times, Quran, hadith, dua and fiqh lookups; turath = manuscripts, scholars and historical texts;',
+    'shop = products, orders and complaints; profile = remembering a returning customer; studio = short film and video work.',
+    'Include a toolset only when the agent genuinely needs it, otherwise []. Set needsKnowledge true only when answering well requires documents the agent cannot reason about alone.'
+  ].join(' ');
+  let draft = null;
+  try {
+    const out = await providers.chat({
+      key, model: 'openai/gpt-oss-120b', tools: null, maxTokens: 700, temperature: 0.4,
+      messages: [{ role: 'system', content: brief }, { role: 'user', content: text }]
+    });
+    if (out.ok) draft = parseDraft(out.text);
+  } catch (e) { /* the fallback draft below still gives them something editable */ }
+  if (!draft) draft = draftFallback(text);
+  try {
+    await suite.logEvent({ ownerId: req.user.id, channel: 'web', kind: 'agent_draft', agentName: draft.name });
+  } catch (e) { /* the cap is a courtesy, not a wall */ }
+  res.json({ draft, remaining: req.user.founder ? null : Math.max(0, DRAFT_DAILY_CAP - used - 1) });
+});
+
 api.post('/agents', async (req, res) => {
   const { name, emoji, description, systemPrompt, model, persona, languages, autoLanguage, groupReply } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name is required' });
@@ -346,6 +434,8 @@ api.post('/agents', async (req, res) => {
     groupReply: groupReply === 'always' ? 'always' : 'mention',
     sortOrder: mine.length,
     knowledgeEnabled: req.body && req.body.knowledgeEnabled === false ? false : true,
+    toolsets: Array.isArray(req.body && req.body.toolsets) ? req.body.toolsets.filter(k => DRAFT_TOOLSETS.includes(k)).slice(0, 5) : [],
+    source: req.body && req.body.source === 'builder' ? 'builder' : 'user',
     status: 'draft', createdAt: new Date().toISOString(), messagesHandled: 0, ownerId: req.user.id
   };
   await db.insertAgent(agent);
