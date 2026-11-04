@@ -604,6 +604,7 @@ async function groqAsk(agent, history, ctx) {
 
   // A research question can legitimately take several tool calls. Allow room for
   // that, then force a written answer from what was gathered instead of giving up.
+  const FALLBACK_REPLY = 'I could not pull a clear answer together for that one. Try asking it a different way, or narrower.';
   const MAX_ROUNDS = 6;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const lastRound = round === MAX_ROUNDS - 1;
@@ -645,7 +646,27 @@ async function groqAsk(agent, history, ctx) {
     }
     const msg = d.choices[0].message;
     const calls = msg.tool_calls || [];
-    if (!calls.length) return { reply: msg.content, model: agent.model };
+    const text = String(msg.content || '').trim();
+    if (text && (!calls.length || lastRound)) return { reply: text, model: agent.model };
+    if (!calls.length) return { reply: text || FALLBACK_REPLY, model: agent.model };
+    if (lastRound) {
+      // Tools are off now, but the model can still try to call one and return an
+      // empty message. Ask once, plainly, and take whatever prose comes back.
+      const forced = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
+        signal: AbortSignal.timeout(60000),
+        body: JSON.stringify({
+          model: agent.model,
+          temperature: 0.5,
+          max_tokens: 800,
+          messages: [...messages, { role: 'user', content: 'Answer now, in plain prose, using the results above. Do not call any tools.' }]
+        })
+      });
+      const fd = await forced.json().catch(() => ({}));
+      const ftext = forced.ok && fd.choices && fd.choices[0] ? String(fd.choices[0].message.content || '').trim() : '';
+      return { reply: ftext || FALLBACK_REPLY, model: agent.model };
+    }
     messages.push(msg);
     for (const c of calls) {
       let args = {};
@@ -654,7 +675,7 @@ async function groqAsk(agent, history, ctx) {
       messages.push({ role: 'tool', tool_call_id: c.id, content: result });
     }
   }
-  return { reply: 'I checked my sources but could not settle on a clear answer. Ask again, or narrow the question.', model: agent.model };
+  return { reply: FALLBACK_REPLY, model: agent.model };
 }
 
 function bumpMessages(agentId) { return db.incMessages(agentId).catch(() => {}); }
