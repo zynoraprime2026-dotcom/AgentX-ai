@@ -358,12 +358,12 @@ const TURATH_TOOLS = TURATH_API_KEY ? [
         subject: { type: 'string', description: 'Subject, e.g. Quran, Hadith, Biography & Scholarship, Fiqh' },
         language: { type: 'string', description: 'Arabic, Persian, Malay (Jawi script)…' },
         region: { type: 'string', description: 'Region of origin, e.g. Hijaz, Sahel, Andalusia' },
-        century: { type: 'integer', description: 'Hijri century as a number, e.g. 10' }
-      }, required: ['query'] } } },
+        century: { type: 'string', description: 'Hijri century, e.g. 10' }
+      }, required: [] } } },
   { type: 'function', function: {
       name: 'get_manuscript',
       description: 'Fetch the full record of one Turath manuscript by its numeric id: title, author, date, script, holding library, description and any digital or image link.',
-      parameters: { type: 'object', properties: { id: { type: 'integer', description: 'Manuscript id from a previous search' } }, required: ['id'] } } },
+      parameters: { type: 'object', properties: { id: { type: 'string', description: 'Manuscript id from a previous search' } }, required: ['id'] } } },
   { type: 'function', function: {
       name: 'manuscript_of_the_day',
       description: 'Get the Turath manuscript featured for today. Use it as a warm opener or a daily knowledge share.',
@@ -374,14 +374,14 @@ const TURATH_TOOLS = TURATH_API_KEY ? [
       parameters: { type: 'object', properties: {
         query: { type: 'string', description: 'Scholar name, work or topic' },
         field: { type: 'string', description: 'Field of scholarship, e.g. Hadith, Tafsir, Fiqh, History' }
-      }, required: ['query'] } } },
+      }, required: [] } } },
   { type: 'function', function: {
       name: 'search_historical_events',
       description: 'Search Turath Islamic historical events and chronology by keyword or year.',
       parameters: { type: 'object', properties: {
         query: { type: 'string', description: 'Event keyword, e.g. Timbuktu, Andalusia, Hajj' },
-        year: { type: 'integer', description: 'Hijri year' }
-      }, required: ['query'] } } }
+        year: { type: 'string', description: 'Hijri year, e.g. 1200' }
+      }, required: [] } } }
 ] : [];
 
 const TOOLS = [
@@ -428,7 +428,7 @@ const TOOLS = [
           collection: { type: 'string', description: 'Optional collection slug, e.g. bukhari, muslim' },
           language: { type: 'string', description: 'Optional 2-letter language code, e.g. en, ar, fr' }
         },
-        required: ['query']
+        required: []
       }
     }
   },
@@ -443,7 +443,7 @@ const TOOLS = [
           query: { type: 'string', description: 'Arabic word, English meaning, or 3-letter root like ص-ب-ر' },
           mode: { type: 'string', enum: ['search', 'root'], description: '"root" to look up all words from an Arabic root' }
         },
-        required: ['query']
+        required: []
       }
     }
   },
