@@ -1126,8 +1126,36 @@ suite.attach({
   }
 });
 
+// Express 4 ignores rejected promises from async handlers, and Node exits on an
+// unhandled rejection - so a single bad request used to take the whole bot down.
+function hardenAsyncRouter(router) {
+  let wrapped = 0;
+  for (const layer of router.stack || []) {
+    if (!layer || !layer.route || !Array.isArray(layer.route.stack)) continue;
+    for (const item of layer.route.stack) {
+      const h = item.handle;
+      if (typeof h !== 'function' || h.length >= 4) continue; // skip error handlers
+      if (h.__wrapped) continue;
+      item.handle = function (req, res, next) {
+        try {
+          const out = h.call(this, req, res, next);
+          if (out && typeof out.catch === 'function') out.catch(next);
+        } catch (e) { next(e); }
+      };
+      item.handle.__wrapped = true;
+      wrapped++;
+    }
+  }
+  return wrapped;
+}
+
 app.use('/api', api);
+console.log('[api] hardened ' + hardenAsyncRouter(api) + ' handlers');
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+// last resort: a broken request must never take the bot offline
+process.on('unhandledRejection', (e) => console.log('[unhandledRejection]', String((e && e.message) || e).slice(0, 200)));
+process.on('uncaughtException', (e) => console.log('[uncaughtException]', String((e && e.message) || e).slice(0, 200)));
 
 // JSON errors for body problems; express answers with an HTML page otherwise.
 app.use((err, req, res, next) => {
@@ -1179,6 +1207,17 @@ if (process.env.VERCEL) {
   ready.catch(e => { console.error('Init failed:', e); });
 } else {
   ready.then(() => {
+    // Render's free tier sleeps the service after ~15 minutes without a request,
+    // so the first WhatsApp/Telegram message after a quiet spell waited for a cold
+    // start (or timed out). A gentle self-ping keeps it warm. Set AGX_KEEPALIVE=0
+    // to switch it off.
+    const KEEPALIVE_URL = process.env.AGX_SELF_URL || process.env.RENDER_EXTERNAL_URL || '';
+    if (KEEPALIVE_URL && process.env.AGX_KEEPALIVE !== '0') {
+      setInterval(() => {
+        fetch(KEEPALIVE_URL.replace(/\/$/, '') + '/api/status', { signal: AbortSignal.timeout(20000) })
+          .catch(() => {});
+      }, 10 * 60 * 1000).unref?.();
+    }
     app.listen(PORT, () => {
       console.log('AgentX dashboard running on http://localhost:' + PORT + (db.HAS_PG ? ' [postgres]' : ' [json files]'));
       registerTelegramCommands();
