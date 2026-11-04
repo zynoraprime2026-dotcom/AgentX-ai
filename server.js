@@ -314,7 +314,7 @@ async function ilmCall(pathname, params, opts) {
   if (!r.ok) throw new Error('Ilm API error (' + r.status + '): ' + JSON.stringify(d).slice(0, 200));
   if (opts && opts.as === 'json') return d;
   const str = typeof d === 'string' ? d : JSON.stringify(d);
-  return str.length > 2200 ? str.slice(0, 2200) + '…' : str;
+  return str.length > 1500 ? str.slice(0, 1500) + '…' : str;
 }
 
 // ---------- Studio API (images + content scaffolding) ----------
@@ -378,7 +378,7 @@ async function turathCall(pathname, params) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error('Turath API error: ' + JSON.stringify(d).slice(0, 180));
   const str = typeof d === 'string' ? d : JSON.stringify(d);
-  return str.length > 2400 ? str.slice(0, 2400) + '…[truncated]' : str;
+  return str.length > 1700 ? str.slice(0, 1700) + '…[truncated]' : str;
 }
 
 const TURATH_TOOLS = TURATH_API_KEY ? [
@@ -649,7 +649,10 @@ async function groqAsk(agent, history, ctx) {
   const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') }, ...history];
   const ilmKey = await getIlmKey();
   const allTools = toolsFor(agent);
-  let toolsOn = true;
+  // A greeting cannot need a lookup, and the schemas cost tokens on every round.
+  const lastSaid = String((history[history.length - 1] || {}).content || '').trim();
+  const smallTalk = lastSaid.length < 30 && /^(hi|hey|hello|yo|salam|salaam|assalam[ou]?\s*alaikum|good (morning|afternoon|evening)|thanks|thank you|ok|okay|test)\b/i.test(lastSaid);
+  let toolsOn = !smallTalk;
 
   // Groq answers 429 when the per-minute token budget runs out, and rejects the
   // whole request when the model emits tool arguments that do not match a schema.
