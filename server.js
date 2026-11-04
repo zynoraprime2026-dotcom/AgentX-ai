@@ -5,6 +5,7 @@ const path = require('path');
 
 const db = require('./db');
 const suite = require('./lib/suite');
+const providers = require('./lib/providers');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -164,6 +165,23 @@ api.post('/auth/logout', async (req, res) => {
 
 // Founder-only: one tiny call so the real Groq budget (limits, remaining tokens,
 // reset window) can be read instead of guessed from 429 messages.
+// Founder-only: which model lanes are live, and can each one answer right now?
+api.get('/providers', async (req, res) => {
+  if (!req.user || !req.user.founder) return res.status(403).json({ error: 'founder only' });
+  const info = await providers.status();
+  const probe = async (fn) => {
+    try { return await fn(); } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 160) }; }
+  };
+  const gem = info.gemini.configured ? await probe(() => providers.geminiChat({
+    messages: [{ role: 'system', content: 'You are a health check.' }, { role: 'user', content: 'Reply with the single word: ready' }],
+    maxTokens: 20, temperature: 0
+  })) : { ok: false, error: 'not configured' };
+  res.json({
+    gemini: { ...info.gemini, ok: Boolean(gem.ok), reply: gem.ok ? String(gem.text).slice(0, 40) : null, error: gem.ok ? null : gem.error },
+    groq: info.groq
+  });
+});
+
 api.get('/groq-limits', async (req, res) => {
   if (!req.user || !req.user.founder) return res.status(403).json({ error: 'founder only' });
   const st = await db.getSettings();
@@ -558,9 +576,9 @@ function toolsFor(agent) {
 async function groqAsk(agent, history, ctx) {
   const st = await db.getSettings();
   const key = (st.groqApiKey && st.groqApiKey.startsWith('gsk_')) ? st.groqApiKey : (process.env.GROQ_API_KEY || '');
-  if (!key.startsWith('gsk_')) {
+  if (!key.startsWith('gsk_') && !(await providers.geminiReady())) {
     const last = history.length ? history[history.length - 1].content : '';
-    return { reply: `*[demo mode — add a Groq API key in Settings to go live]*\n\n${agent.name} here. You said: "${(last || '').slice(0, 120)}".`, demo: true };
+    return { reply: `*[demo mode — add a Groq or Gemini key in Settings to go live]*\n\n${agent.name} here. You said: "${(last || '').slice(0, 120)}".`, demo: true };
   }
   let extras = '';
   try {
@@ -579,92 +597,69 @@ async function groqAsk(agent, history, ctx) {
   const smallTalk = lastSaid.length < 30 && /^(hi|hey|hello|yo|salam|salaam|assalam[ou]?\s*alaikum|good (morning|afternoon|evening)|thanks|thank you|ok|okay|test)\b/i.test(lastSaid);
   let toolsOn = !smallTalk;
 
-  // Groq answers 429 when the per-minute token budget runs out, and rejects the
-  // whole request when the model emits tool arguments that do not match a schema.
-  // Neither should reach the user as a dead end.
+  // Both providers share one retry shape: wait out a per-minute budget, and drop
+  // the tools rather than fail when a tool call is rejected.
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  function rateWait(res, msg) {
-    const after = Number(res.headers.get('retry-after'));
-    if (Number.isFinite(after) && after > 0) return Math.min(after * 1000 + 300, 45000);
-    const m = /try again in ([\d.]+)s/i.exec(String(msg || ''));
-    if (m) return Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 400, 45000);
-    const reset = /reset-tokens[^0-9]*([\d.]+)s/i.exec(String(res.headers.get('x-ratelimit-reset-tokens') || ''));
-    if (reset) return Math.min(Math.ceil(parseFloat(reset[1]) * 1000) + 400, 45000);
-    return 8000;
-  }
-
-  // A research question can legitimately take several tool calls. Allow room for
-  // that, then force a written answer from what was gathered instead of giving up.
   const FALLBACK_REPLY = 'I could not pull a clear answer together for that one. Try asking it a different way, or narrower.';
   const MAX_ROUNDS = 6;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const lastRound = round === MAX_ROUNDS - 1;
-    let r = null, d = null, waited = 0;
+    let out = null, waited = 0;
     for (let attempt = 0; attempt < 4; attempt++) {
-      const payload = { model: agent.model, messages, temperature: 0.7, max_tokens: 700 };
-      if (toolsOn && !lastRound && allTools.length) { payload.tools = allTools; payload.tool_choice = 'auto'; }
-      r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
-        signal: AbortSignal.timeout(90000),
-        body: JSON.stringify(payload)
+      out = await providers.chat({
+        key,
+        model: agent.model,
+        messages,
+        tools: (toolsOn && !lastRound && allTools.length) ? allTools : null,
+        maxTokens: 700,
+        temperature: 0.7
       });
-      d = await r.json().catch(() => ({}));
-      if (r.ok) break;
-      const em = (d.error && d.error.message) || '';
-      if (r.status === 429 && waited < 45000) {
-        const w = rateWait(r, em);
+      if (out.ok) break;
+      const em = String(out.error || '');
+      if ((out.status === 429 || out.status === 503) && waited < 45000) {
+        const w = Math.min(Number(out.wait) || 8000, 45000);
         waited += w;
-        console.log('[groq 429] waiting ' + w + 'ms');
+        console.log('[provider ' + out.status + '] waiting ' + w + 'ms: ' + em.slice(0, 120));
         await sleep(w);
         continue;
       }
-      if (toolsOn && /tool[_ ]?(call|use)|validation/i.test(em)) {
+      if (toolsOn && /tool[_ ]?(call|use)|validation|function/i.test(em)) {
         toolsOn = false; // answer without tools rather than failing outright
-        console.log('[groq tools] dropped for this reply: ' + em.slice(0, 120));
+        console.log('[tools] dropped for this reply: ' + em.slice(0, 120));
         continue;
       }
       break;
     }
-    if (!r.ok) {
-      const em = (d.error && d.error.message) || 'Groq request failed';
-      if (r.status === 429) {
+    if (!out.ok) {
+      if (out.status === 429) {
         const busy = new Error('I am at my limit for this minute. Give me a moment and ask again.');
         busy.friendly = true;
-        busy.raw = em;
+        busy.raw = out.error;
         throw busy;
       }
-      throw new Error(em);
+      throw new Error(String(out.error || 'The model request failed'));
     }
-    const msg = d.choices[0].message;
-    const calls = msg.tool_calls || [];
-    const text = String(msg.content || '').trim();
-    if (text && (!calls.length || lastRound)) return { reply: text, model: agent.model };
-    if (!calls.length) return { reply: text || FALLBACK_REPLY, model: agent.model };
+    const calls = out.calls || [];
+    const text = String(out.text || '').trim();
+    if (text && (!calls.length || lastRound)) return { reply: text, model: out.model || agent.model };
+    if (!calls.length) return { reply: text || FALLBACK_REPLY, model: out.model || agent.model };
     if (lastRound) {
-      // Tools are off now, but the model can still try to call one and return an
+      // Tools are off now, but a model can still try to call one and return an
       // empty message. Ask once, plainly, and take whatever prose comes back.
-      const forced = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
-        signal: AbortSignal.timeout(60000),
-        body: JSON.stringify({
-          model: agent.model,
-          temperature: 0.5,
-          max_tokens: 800,
-          messages: [...messages, { role: 'user', content: 'Answer now, in plain prose, using the results above. Do not call any tools.' }]
-        })
+      const forced = await providers.chat({
+        key,
+        model: agent.model,
+        messages: [...messages, { role: 'user', content: 'Answer now, in plain prose, using the results above. Do not call any tools.' }],
+        tools: null,
+        maxTokens: 800,
+        temperature: 0.5
       });
-      const fd = await forced.json().catch(() => ({}));
-      const ftext = forced.ok && fd.choices && fd.choices[0] ? String(fd.choices[0].message.content || '').trim() : '';
-      return { reply: ftext || FALLBACK_REPLY, model: agent.model };
+      return { reply: (forced.ok && forced.text) ? forced.text : FALLBACK_REPLY, model: agent.model };
     }
-    messages.push(msg);
+    messages.push({ role: 'assistant', content: text, tool_calls: calls });
     for (const c of calls) {
-      let args = {};
-      try { args = JSON.parse(c.function.arguments || '{}'); } catch {}
-      const result = await runTool(c.function.name, args, ctx);
-      messages.push({ role: 'tool', tool_call_id: c.id, content: result });
+      const result = await runTool(c.name, c.args || {}, ctx);
+      messages.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: String(result == null ? '' : result) });
     }
   }
   return { reply: FALLBACK_REPLY, model: agent.model };
