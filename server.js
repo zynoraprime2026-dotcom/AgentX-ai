@@ -162,6 +162,38 @@ api.post('/auth/logout', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Founder-only: one tiny call so the real Groq budget (limits, remaining tokens,
+// reset window) can be read instead of guessed from 429 messages.
+api.get('/groq-limits', async (req, res) => {
+  if (!req.user || !req.user.founder) return res.status(403).json({ error: 'founder only' });
+  const st = await db.getSettings();
+  const key = (st.groqApiKey && st.groqApiKey.startsWith('gsk_')) ? st.groqApiKey : (process.env.GROQ_API_KEY || '');
+  if (!key.startsWith('gsk_')) return res.status(503).json({ error: 'no Groq key configured' });
+  const model = String(req.query.model || 'openai/gpt-oss-120b');
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
+      signal: AbortSignal.timeout(30000),
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 })
+    });
+    const h = (n) => r.headers.get(n) || null;
+    const d = await r.json().catch(() => ({}));
+    res.json({
+      model, status: r.status,
+      limitTokensPerMinute: h('x-ratelimit-limit-tokens'),
+      remainingTokens: h('x-ratelimit-remaining-tokens'),
+      resetTokens: h('x-ratelimit-reset-tokens'),
+      limitRequestsPerDay: h('x-ratelimit-limit-requests'),
+      remainingRequests: h('x-ratelimit-remaining-requests'),
+      retryAfter: h('retry-after'),
+      error: r.ok ? null : ((d.error && d.error.message) || '').slice(0, 300)
+    });
+  } catch (e) {
+    res.status(502).json({ error: String(e.message).slice(0, 200) });
+  }
+});
+
 api.get('/status', async (req, res) => {
   const s = await db.getSettings();
   const cfg = Boolean((s.groqApiKey && s.groqApiKey.startsWith('gsk_')) || (process.env.GROQ_API_KEY || '').startsWith('gsk_'));
@@ -625,10 +657,12 @@ async function groqAsk(agent, history, ctx) {
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
   function rateWait(res, msg) {
     const after = Number(res.headers.get('retry-after'));
-    if (Number.isFinite(after) && after > 0) return Math.min(after * 1000, 20000);
+    if (Number.isFinite(after) && after > 0) return Math.min(after * 1000 + 300, 45000);
     const m = /try again in ([\d.]+)s/i.exec(String(msg || ''));
-    if (m) return Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 250, 20000);
-    return 6000;
+    if (m) return Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 400, 45000);
+    const reset = /reset-tokens[^0-9]*([\d.]+)s/i.exec(String(res.headers.get('x-ratelimit-reset-tokens') || ''));
+    if (reset) return Math.min(Math.ceil(parseFloat(reset[1]) * 1000) + 400, 45000);
+    return 8000;
   }
 
   // A research question can legitimately take several tool calls. Allow room for
@@ -638,8 +672,8 @@ async function groqAsk(agent, history, ctx) {
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const lastRound = round === MAX_ROUNDS - 1;
     let r = null, d = null, waited = 0;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const payload = { model: agent.model, messages, temperature: 0.7, max_tokens: 800 };
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const payload = { model: agent.model, messages, temperature: 0.7, max_tokens: 700 };
       if (toolsOn && !lastRound && allTools.length) { payload.tools = allTools; payload.tool_choice = 'auto'; }
       r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
@@ -650,7 +684,7 @@ async function groqAsk(agent, history, ctx) {
       d = await r.json().catch(() => ({}));
       if (r.ok) break;
       const em = (d.error && d.error.message) || '';
-      if (r.status === 429 && waited < 20000) {
+      if (r.status === 429 && waited < 45000) {
         const w = rateWait(r, em);
         waited += w;
         console.log('[groq 429] waiting ' + w + 'ms');
@@ -1044,7 +1078,7 @@ async function handleWa(req) {
   });
   if (waCmd) return reply(waCmd);
 
-  const history = [...(await db.getHistory('whatsapp', hkey)), { role: 'user', content: text }].slice(-12);
+  const history = [...(await db.getHistory('whatsapp', hkey)), { role: 'user', content: text }].slice(-8);
   console.log('[WA use]', agent.name, linked ? '(linked number)' : '(shared number)');
   const waBase = { ownerId: agent.ownerId, agentId: agent.id, agentName: agent.name, channel: 'whatsapp' };
   const waStarted = Date.now();
