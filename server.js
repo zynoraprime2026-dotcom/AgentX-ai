@@ -240,7 +240,7 @@ api.post('/agents', async (req, res) => {
 api.put('/agents/:id', async (req, res) => {
   const a = (await db.listAgents()).find(x => x.id === req.params.id && x.ownerId === req.user.id);
   if (!a) return res.status(404).json({ error: 'agent not found' });
-  const allowed = ['name','emoji','description','systemPrompt','model','status','platforms','persona','languages','autoLanguage','groupReply','sortOrder','knowledgeEnabled'];
+  const allowed = ['name','emoji','description','systemPrompt','model','status','platforms','persona','languages','autoLanguage','groupReply','sortOrder','knowledgeEnabled','toolsets'];
   for (const k of allowed) if (req.body && k in req.body) a[k] = req.body[k];
   if (req.body && 'waPhoneId' in req.body) {
     const pid = String(req.body.waPhoneId || '').replace(/\D/g, '').slice(0, 24);
@@ -569,6 +569,35 @@ const SHOP_TOOLS = ALHAQQ_OPS_API_KEY ? [
 
 // ---------- shared Groq call ----------
 
+// Every agent used to carry every tool, so a single reply spent a couple of
+// thousand tokens on schemas it would never call. Groq counts that against the
+// per-minute budget, which is why two answers in a minute could trip the limit.
+const TOOLSETS = { ilm: TOOLS, shop: SHOP_TOOLS, profile: PROFILE_TOOLS, studio: STUDIO_TOOLS, turath: TURATH_TOOLS };
+
+function inferToolsets(agent) {
+  // Name and description only: a helpdesk prompt names every feature, so reading
+  // the whole prompt handed an agent tools it would never call.
+  const hay = [agent.name, agent.description].join(' ').toLowerCase();
+  const has = (...w) => w.some(x => hay.includes(x));
+  const keys = [];
+  if (has('manuscript', 'turath', 'catalogue', 'scholar')) keys.push('turath');
+  if (has('madrasa', 'tutor', 'quran', 'qur\'an', "du'a", 'dua', 'hadith', 'fiqh', 'wudu', 'islam', 'prayer')) keys.push('ilm');
+  if (has('shop', 'order', 'product', 'customer')) keys.push('shop', 'profile');
+  if (has('studio', 'tasveer', 'film', 'shot list', 'render')) keys.push('studio');
+  return keys;
+}
+
+function toolsFor(agent) {
+  const keys = Array.isArray(agent.toolsets) && agent.toolsets.length ? agent.toolsets : inferToolsets(agent);
+  const out = [];
+  for (const k of keys) {
+    for (const t of (TOOLSETS[k] || [])) {
+      if (t && t.function && !out.some(x => x.function.name === t.function.name)) out.push(t);
+    }
+  }
+  return out;
+}
+
 async function groqAsk(agent, history, ctx) {
   const st = await db.getSettings();
   const key = (st.groqApiKey && st.groqApiKey.startsWith('gsk_')) ? st.groqApiKey : (process.env.GROQ_API_KEY || '');
@@ -587,7 +616,7 @@ async function groqAsk(agent, history, ctx) {
   } catch (e) { console.log('[prompt extras]', String(e).slice(0, 120)); }
   const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') }, ...history];
   const ilmKey = await getIlmKey();
-  const allTools = [...TOOLS, ...SHOP_TOOLS, ...PROFILE_TOOLS, ...STUDIO_TOOLS, ...TURATH_TOOLS];
+  const allTools = toolsFor(agent);
   let toolsOn = true;
 
   // Groq answers 429 when the per-minute token budget runs out, and rejects the
@@ -611,7 +640,7 @@ async function groqAsk(agent, history, ctx) {
     let r = null, d = null, waited = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
       const payload = { model: agent.model, messages, temperature: 0.7, max_tokens: 800 };
-      if (toolsOn && !lastRound) { payload.tools = allTools; payload.tool_choice = 'auto'; }
+      if (toolsOn && !lastRound && allTools.length) { payload.tools = allTools; payload.tool_choice = 'auto'; }
       r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
