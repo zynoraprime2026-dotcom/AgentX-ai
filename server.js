@@ -176,8 +176,9 @@ api.get('/providers', async (req, res) => {
     messages: [{ role: 'system', content: 'You are a health check.' }, { role: 'user', content: 'Reply with the single word: ready' }],
     maxTokens: 20, temperature: 0
   })) : { ok: false, error: 'not configured' };
+  const candidates = await providers.geminiModels(false).catch(() => []);
   res.json({
-    gemini: { ...info.gemini, ok: Boolean(gem.ok), reply: gem.ok ? String(gem.text).slice(0, 40) : null, error: gem.ok ? null : gem.error },
+    gemini: { ...info.gemini, candidates: candidates.slice(0, 6), ok: Boolean(gem.ok), reply: gem.ok ? String(gem.text).slice(0, 40) : null, error: gem.ok ? null : gem.error },
     groq: info.groq
   });
 });
