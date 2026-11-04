@@ -36,11 +36,42 @@ function rateLimit(max, windowMs) {
   };
 }
 app.use((req, res, next) => { if (req.path.startsWith('/api')) res.set('Cache-Control', 'no-store'); next(); });
+// Per-account throttle, so one signed-in user cannot burn the model budget alone.
+const userHits = new Map();
+function rateLimitUser(max, windowMs, label) {
+  return (req, res, next) => {
+    const who = (req.user && req.user.id) || req.ip;
+    const k = label + '|' + who, now = Date.now();
+    const hits = (userHits.get(k) || []).filter((t) => now - t < windowMs);
+    if (hits.length >= max) return res.status(429).json({ error: 'That is a lot at once. Give it a moment and try again.' });
+    hits.push(now); userHits.set(k, hits); next();
+  };
+}
+// Both maps are keyed by client, so entries must not pile up forever.
+const sweepLimits = setInterval(() => {
+  const now = Date.now();
+  for (const [k, hits] of loginHits) if (!hits.some((t) => now - t < 3600e3)) loginHits.delete(k);
+  for (const [k, hits] of userHits) if (!hits.some((t) => now - t < 600e3)) userHits.delete(k);
+}, 10 * 60e3);
+if (sweepLimits.unref) sweepLimits.unref();
+
 // Serve the dashboard explicitly for '/' (serve-static's directory-index handling has crashed on Vercel).
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.use(express.static(path.join(__dirname, 'public'), { etag: true, maxAge: 0, setHeaders: (res) => res.set('Cache-Control', 'no-cache') }));
 
 const readJson = db.readJson; const writeJson = db.writeJson;
+
+// Telegram and Meta retry a delivery they think was missed. Without this, one
+// message could be answered twice and charged twice.
+const seenDelivery = new Map();
+function firstDelivery(kind, id, windowMs = 10 * 60e3) {
+  if (!id) return true;
+  const key = kind + ':' + id, now = Date.now();
+  if (seenDelivery.size > 5000) for (const [k, t] of seenDelivery) if (now - t > windowMs) seenDelivery.delete(k);
+  if (seenDelivery.has(key) && now - seenDelivery.get(key) < windowMs) return false;
+  seenDelivery.set(key, now);
+  return true;
+}
 const uid = () => 'agx_' + Math.random().toString(36).slice(2, 9);
 
 // ---------- API ----------
@@ -137,6 +168,7 @@ api.post('/auth/recover', rateLimit(6, 3600e3), async (req, res) => {
   const u = await db.findUserByEmail(em);
   if (!u) return res.status(404).json({ error: 'no account with that email' });
   await db.updateUserPass(u.id, hashPassword(password));
+  await db.clearUserSessions(u.id).catch(() => {}); // a recovery ends every old session
   const token = crypto.randomBytes(24).toString('hex');
   const sess = { user: { id: u.id, email: u.email, name: u.name, founder: Boolean(u.founder) }, expires: new Date(Date.now() + 30 * 864e5).toISOString() };
   await db.putSession(token, sess);
@@ -144,7 +176,7 @@ api.post('/auth/recover', rateLimit(6, 3600e3), async (req, res) => {
   res.json({ ok: true, user: sess.user });
 });
 
-api.post('/auth/password', async (req, res) => {
+api.post('/auth/password', rateLimit(10, 900e3), async (req, res) => {
   const { current, next } = req.body || {};
   const [, sess] = await loadSession(req);
   if (!sess) return res.status(401).json({ error: 'login required' });
@@ -153,6 +185,9 @@ api.post('/auth/password', async (req, res) => {
   if (!u) return res.status(404).json({ error: 'account not found' });
   if (!checkPassword(current, u.pass)) return res.status(403).json({ error: 'current password is wrong' });
   await db.updateUserPass(u.id, hashPassword(next));
+  // Anyone else still holding a session for this account is signed out.
+  const [token] = await loadSession(req);
+  await db.clearUserSessions(u.id, token).catch(() => {});
   res.json({ ok: true });
 });
 
@@ -226,6 +261,7 @@ api.get('/status', async (req, res) => {
     turathConnected: Boolean(process.env.TURATH_API_KEY),
     keepAlive: keepAlive.on ? { on: true, everyMinutes: keepAlive.everyMinutes, url: keepAlive.url } : { on: false },
     storage: db.HAS_PG ? 'postgres' : 'files',
+    dbError: Boolean(db.lastDbError) && !db.HAS_PG,
     adminAuth: Boolean(process.env.ADMIN_KEY)
   });
 });
@@ -669,10 +705,12 @@ async function groqAsk(agent, history, ctx) {
 function bumpMessages(agentId) { return db.incMessages(agentId).catch(() => {}); }
 
 // test chat console — same path the Telegram webhook uses
-api.post('/chat/:id', async (req, res) => {
+api.post('/chat/:id', rateLimitUser(20, 60e3, 'chat'), async (req, res) => {
   const a = (await db.listAgents()).find(x => x.id === req.params.id && x.ownerId === req.user.id);
   if (!a) return res.status(404).json({ error: 'agent not found' });
-  const history = Array.isArray(req.body.history) ? req.body.history.slice(-12) : [];
+  const history = (Array.isArray(req.body.history) ? req.body.history.slice(-12) : [])
+    .filter((m) => m && typeof m === 'object')
+    .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content == null ? '' : m.content).slice(0, 4000) }));
   const lastUser = [...history].reverse().find(m => m.role === 'user');
   const started = Date.now();
   const base = { ownerId: req.user.id, agentId: a.id, agentName: a.name, channel: 'web' };
@@ -696,7 +734,7 @@ api.post('/chat/:id', async (req, res) => {
     suite.logEvent({ ...base, kind: 'error', error: String(e.raw || e.message).slice(0, 400) });
     // A busy model is not an error the user should see as a broken page.
     if (e.friendly) return res.json({ reply: e.message, model: 'busy' });
-    res.status(502).json({ error: e.message });
+    res.status(502).json({ error: 'Something went wrong on my side just now. Please try that again.' });
   }
 });
 
@@ -856,9 +894,12 @@ app.post('/webhook/telegram', (req, res) => {
   if (TG_SECRET && !safeEq(req.get('x-telegram-bot-api-secret-token') || '', TG_SECRET)) return res.status(401).end();
   const upd = req.body || {};
   const msg = upd.message || upd.edited_message;
+  if (upd.update_id != null && !firstDelivery('tg', String(upd.update_id))) return res.json({ ok: true, duplicate: true });
   if (msg && msg.voice) {
-    handleTgVoice(msg).catch(e => console.log('[TG voice]', String(e).slice(0, 160)));
-  } else if (msg && msg.text) handleTgMessage(msg).catch(() => {});
+    handleTgVoice(msg).catch(e => console.log('[TG voice]', String(e && e.message || e).slice(0, 160)));
+  } else if (msg && msg.text) {
+    handleTgMessage(msg).catch(e => console.log('[TG msg]', String(e && e.message || e).slice(0, 160)));
+  }
   res.json({ ok: true });
 });
 
@@ -941,6 +982,7 @@ async function handleWa(req) {
   const val = req.body && req.body.entry && req.body.entry[0] && req.body.entry[0].changes && req.body.entry[0].changes[0] && req.body.entry[0].changes[0].value;
   const msg = val && val.messages && val.messages[0];
   if (!msg) return;
+  if (msg.id && !firstDelivery('wa', String(msg.id))) return;
   const toPhoneId = val.metadata && val.metadata.phone_number_id ? String(val.metadata.phone_number_id) : WA_PHONE_ID;
   const from = msg.from;
   const agents = await db.listAgents();
@@ -1097,18 +1139,32 @@ app.post('/broadcast/fajr', async (req, res) => {
 // Vercel cron (or any external scheduler) pings this GET daily before dawn.
 // Guarded by CRON_SECRET (falls back to BROADCAST_TOKEN so either can be used).
 api.get('/cron/fajr', async (req, res) => {
-  const token = process.env.CRON_SECRET || process.env.BROADCAST_TOKEN;
-  const auth = req.get('authorization') || '';
-  if (token && auth !== 'Bearer ' + token) return res.status(401).json({ error: 'unauthorized' });
+  if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized: set CRON_SECRET and send it as a Bearer token' });
   const results = await sendFajrBroadcast();
   const ticked = await suite.tick().catch(e => ({ error: String(e).slice(0, 160) }));
   res.json({ ok: true, results, reminders: ticked.reminders, triggers: ticked.triggers });
 });
 
+// An admin key that was never configured must never match, and a match must not
+// leak its length or content through timing.
+function adminKeyOk(req) {
+  const configured = process.env.ADMIN_KEY;
+  const given = req.headers['x-admin-key'];
+  if (!configured || typeof given !== 'string' || !given) return false;
+  return safeEq(given, configured);
+}
 function isFounderOrKey(req) {
-  if (req.user && req.user.founder) return true;
-  const k = req.headers['x-admin-key'];
-  return Boolean(process.env.ADMIN_KEY && k && k === process.env.ADMIN_KEY);
+  return Boolean((req.user && req.user.founder) || adminKeyOk(req));
+}
+// Cron endpoints are reachable without a session, so they answer only for a
+// configured secret, an admin key or a signed-in founder - never by default.
+async function cronOk(req) {
+  const token = process.env.CRON_SECRET || process.env.BROADCAST_TOKEN;
+  const auth = req.get('authorization') || '';
+  if (token && safeEq(auth, 'Bearer ' + token)) return true;
+  if (adminKeyOk(req)) return true;
+  const [, sess] = await loadSession(req);
+  return Boolean(sess && sess.user && sess.user.founder && new Date(sess.expires) > new Date());
 }
 api.get('/admin/users', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
@@ -1140,9 +1196,8 @@ api.get('/admin/stats', async (req, res) => {
   });
 });
 api.post('/admin/dbdebug', async (req, res) => {
-  const byKey = !(req.user && req.user.founder) && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
-  if (!byKey) return res.status(403).json({ error: 'admin key required' });
-  const p = require('./db').pool();
+  if (!adminKeyOk(req)) return res.status(403).json({ error: 'admin key required' });
+  const p = require('./db').poolRef;
   if (!p) return res.json({ mode: 'json-file (no postgres)' });
   const out = {};
   try {
@@ -1153,8 +1208,7 @@ api.post('/admin/dbdebug', async (req, res) => {
 });
 
 api.post('/admin/users/:id/founder', async (req, res) => {
-  const byKey = !(req.user && req.user.founder) && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
-  if (!byKey) return res.status(403).json({ error: 'admin key required' });
+  if (!adminKeyOk(req)) return res.status(403).json({ error: 'admin key required' });
   const u = (await db.listUsers()).find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'user not found' });
   await db.setFounder(u.id, true);
@@ -1170,8 +1224,7 @@ api.delete('/admin/users/:id', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   const u = (await db.listUsers()).find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: 'user not found' });
-  const byKey = !(req.user && req.user.founder) && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
-  if (u.founder && !byKey) return res.status(400).json({ error: 'founder account can only be removed with the admin key' });
+  if (u.founder && !adminKeyOk(req)) return res.status(400).json({ error: 'founder account can only be removed with the admin key' });
   await db.deleteUser(u.id);
   res.json({ ok: true, deleted: u.email });
 });
