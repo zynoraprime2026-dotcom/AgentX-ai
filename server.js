@@ -211,15 +211,33 @@ api.get('/providers', async (req, res) => {
     messages: [{ role: 'system', content: 'You are a health check.' }, { role: 'user', content: 'Reply with the single word: ready' }],
     maxTokens: 20, temperature: 0
   })) : { ok: false, error: 'not configured' };
-  const toolProbe = String(req.query.tools || '') === '1' && info.gemini.configured ? await probe(() => providers.geminiChat({
-    messages: [{ role: 'system', content: 'You are a health check.' }, { role: 'user', content: 'Look up the value 42, then reply with it.' }],
-    tools: [{ type: 'function', function: { name: 'lookup', description: 'Look up a number', parameters: { type: 'object', properties: { query: { type: 'string' } } } } }],
-    maxTokens: 512, temperature: 0
-  })) : null;
+  const toolDecls = [{ type: 'function', function: { name: 'lookup', description: 'Look up a number', parameters: { type: 'object', properties: { query: { type: 'string' } } } } }];
+  const toolProbe = String(req.query.tools || '') === '1' && info.gemini.configured ? await probe(async () => {
+    const first = await providers.geminiChat({
+      messages: [{ role: 'system', content: 'You are a health check.' }, { role: 'user', content: 'Look up the value 42, then reply with it.' }],
+      tools: toolDecls, maxTokens: 512, temperature: 0
+    });
+    if (!first.ok) return { ok: false, stage: 'round 1', error: first.error };
+    const call = (first.calls || [])[0];
+    if (!call) return { ok: false, stage: 'round 1', error: 'no tool call returned' };
+    // Round two replays the model's own tool call, the case that breaks in production.
+    const second = await providers.geminiChat({
+      messages: [
+        { role: 'system', content: 'You are a health check.' },
+        { role: 'user', content: 'Look up the value 42, then reply with it.' },
+        { role: 'assistant', content: '', tool_calls: [{ id: call.id, name: call.name, args: call.args }] },
+        { role: 'tool', name: call.name, tool_call_id: call.id, content: JSON.stringify({ result: '42' }) }
+      ],
+      tools: toolDecls, maxTokens: 512, temperature: 0
+    });
+    return second.ok
+      ? { ok: true, stage: 'round 2', calls: (second.calls || []).length, text: String(second.text || '').slice(0, 40) }
+      : { ok: false, stage: 'round 2 replay', error: second.error };
+  }) : null;
   const candidates = await providers.geminiModels(false).catch(() => []);
   res.json({
     gemini: { ...info.gemini, candidates: candidates.slice(0, 6), ok: Boolean(gem.ok), reply: gem.ok ? String(gem.text).slice(0, 40) : null, error: gem.ok ? null : gem.error,
-      toolRound: toolProbe ? { ok: Boolean(toolProbe.ok), calls: (toolProbe.calls || []).length, error: toolProbe.ok ? null : String(toolProbe.error || '').slice(0, 300) } : null },
+      toolRound: toolProbe ? { ok: Boolean(toolProbe.ok), stage: toolProbe.stage, error: toolProbe.ok ? null : String(toolProbe.error || '').slice(0, 300) } : null },
     groq: info.groq
   });
 });
@@ -661,7 +679,6 @@ async function groqAsk(agent, history, ctx) {
         maxTokens: 700,
         temperature: 0.7
       });
-      if (out.ok) break;
       const em = String(out.error || '');
       const fell = out.fellBack || out.attempts;
       if (fell) {
@@ -675,6 +692,7 @@ async function groqAsk(agent, history, ctx) {
           });
         } catch (e) { /* diagnostics must never break a reply */ }
       }
+      if (out.ok) break;
       if ((out.status === 429 || out.status === 503) && waited < 45000) {
         const w = Math.min(Number(out.wait) || 8000, 45000);
         waited += w;
