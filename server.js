@@ -587,21 +587,54 @@ async function groqAsk(agent, history, ctx) {
   } catch (e) { console.log('[prompt extras]', String(e).slice(0, 120)); }
   const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') }, ...history];
   const ilmKey = await getIlmKey();
+  const allTools = [...TOOLS, ...SHOP_TOOLS, ...PROFILE_TOOLS, ...STUDIO_TOOLS, ...TURATH_TOOLS];
+  let toolsOn = true;
+
+  // Groq answers 429 when the per-minute token budget runs out, and rejects the
+  // whole request when the model emits tool arguments that do not match a schema.
+  // Neither should reach the user as a dead end.
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  function rateWait(res, msg) {
+    const after = Number(res.headers.get('retry-after'));
+    if (Number.isFinite(after) && after > 0) return Math.min(after * 1000, 20000);
+    const m = /try again in ([\d.]+)s/i.exec(String(msg || ''));
+    if (m) return Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 250, 20000);
+    return 6000;
+  }
+
   for (let round = 0; round < 4; round++) {
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
-      signal: AbortSignal.timeout(90000),
-      body: JSON.stringify({
-        model: agent.model,
-        messages,
-        tools: [...TOOLS, ...SHOP_TOOLS, ...PROFILE_TOOLS, ...STUDIO_TOOLS, ...TURATH_TOOLS],
-        tool_choice: 'auto',
-        temperature: 0.7, max_tokens: 800
-      })
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error((d.error && d.error.message) || 'Groq request failed');
+    let r = null, d = null, waited = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const payload = { model: agent.model, messages, temperature: 0.7, max_tokens: 800 };
+      if (toolsOn) { payload.tools = allTools; payload.tool_choice = 'auto'; }
+      r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
+        signal: AbortSignal.timeout(90000),
+        body: JSON.stringify(payload)
+      });
+      d = await r.json().catch(() => ({}));
+      if (r.ok) break;
+      const em = (d.error && d.error.message) || '';
+      if (r.status === 429 && waited < 20000) {
+        const w = rateWait(r, em);
+        waited += w;
+        console.log('[groq 429] waiting ' + w + 'ms');
+        await sleep(w);
+        continue;
+      }
+      if (toolsOn && /tool[_ ]?(call|use)|validation/i.test(em)) {
+        toolsOn = false; // answer without tools rather than failing outright
+        console.log('[groq tools] dropped for this reply: ' + em.slice(0, 120));
+        continue;
+      }
+      break;
+    }
+    if (!r.ok) {
+      const em = (d.error && d.error.message) || 'Groq request failed';
+      if (r.status === 429) throw new Error('The model is busy for this minute — ask again in a moment.');
+      throw new Error(em);
+    }
     const msg = d.choices[0].message;
     const calls = msg.tool_calls || [];
     if (!calls.length) return { reply: msg.content, model: agent.model };
