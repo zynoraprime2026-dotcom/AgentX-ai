@@ -860,7 +860,7 @@ async function handleTgMessage(msg) {
     else await tgSend(chatId, out.reply);
   } catch (e) {
     suite.logEvent({ ...tgBase, kind: 'error', error: String(e.message).slice(0, 200) });
-    await tgSend(chatId, 'Sorry, I could not answer right now. Please try again.');
+    await tgSend(chatId, e && e.friendly ? e.message : 'Sorry, I could not answer right now. Please try again.');
   }
 }
 
@@ -1037,7 +1037,9 @@ async function handleWa(req) {
   } catch (e) {
     console.log('[WA err]', String(e).slice(0, 200));
     suite.logEvent({ ...waBase, kind: 'error', error: String(e.message).slice(0, 200) });
-    await reply('Sorry, I could not answer right now.').catch(() => {});
+    // Say why when we know, so a busy minute does not look like a broken bot.
+    const why = e && e.friendly ? e.message : 'Sorry, I could not answer right now. Try that again in a moment.';
+    await reply(why).catch(() => {});
   }
 }
 
