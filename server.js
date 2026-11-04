@@ -602,11 +602,15 @@ async function groqAsk(agent, history, ctx) {
     return 6000;
   }
 
-  for (let round = 0; round < 4; round++) {
+  // A research question can legitimately take several tool calls. Allow room for
+  // that, then force a written answer from what was gathered instead of giving up.
+  const MAX_ROUNDS = 6;
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const lastRound = round === MAX_ROUNDS - 1;
     let r = null, d = null, waited = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
       const payload = { model: agent.model, messages, temperature: 0.7, max_tokens: 800 };
-      if (toolsOn) { payload.tools = allTools; payload.tool_choice = 'auto'; }
+      if (toolsOn && !lastRound) { payload.tools = allTools; payload.tool_choice = 'auto'; }
       r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
@@ -632,7 +636,11 @@ async function groqAsk(agent, history, ctx) {
     }
     if (!r.ok) {
       const em = (d.error && d.error.message) || 'Groq request failed';
-      if (r.status === 429) throw new Error('The model is busy for this minute — ask again in a moment.');
+      if (r.status === 429) {
+        const busy = new Error('I am at my limit for this minute. Give me a moment and ask again.');
+        busy.friendly = true;
+        throw busy;
+      }
       throw new Error(em);
     }
     const msg = d.choices[0].message;
@@ -646,7 +654,7 @@ async function groqAsk(agent, history, ctx) {
       messages.push({ role: 'tool', tool_call_id: c.id, content: result });
     }
   }
-  return { reply: 'I got carried away checking references — please ask again.', model: agent.model };
+  return { reply: 'I checked my sources but could not settle on a clear answer. Ask again, or narrow the question.', model: agent.model };
 }
 
 function bumpMessages(agentId) { return db.incMessages(agentId).catch(() => {}); }
@@ -677,6 +685,8 @@ api.post('/chat/:id', async (req, res) => {
     res.json(out);
   } catch (e) {
     suite.logEvent({ ...base, kind: 'error', error: String(e.message).slice(0, 200) });
+    // A busy model is not an error the user should see as a broken page.
+    if (e.friendly) return res.json({ reply: e.message, model: 'busy' });
     res.status(502).json({ error: e.message });
   }
 });
