@@ -22,7 +22,9 @@ app.use((req, res, next) => {
   next();
 });
 // keep the raw body so Meta's webhook signature can be verified
-app.use(express.json({ limit: '256kb', verify: (req, res, buf) => { req.rawBody = buf; } }));
+// 256kb was too small for base64 uploads: knowledge files (up to 4 MB) and voice
+// notes failed with a raw HTML "Payload Too Large" page instead of a JSON error.
+app.use(express.json({ limit: '12mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 const loginHits = new Map();
 function rateLimit(max, windowMs) {
   return (req, res, next) => {
@@ -1077,6 +1079,15 @@ suite.attach({
 
 app.use('/api', api);
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+// JSON errors for body problems; express answers with an HTML page otherwise.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'That file is too large for one request (limit about 8 MB).' });
+  if (err && err.type === 'entity.parse.failed') return res.status(400).json({ error: 'malformed request body' });
+  console.log('[api err]', err && err.message);
+  res.status(500).json({ error: 'server error' });
+});
 
 async function seedAgents() {
   if ((await db.listAgents()).length) return;
