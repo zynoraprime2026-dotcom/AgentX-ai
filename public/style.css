@@ -187,3 +187,9 @@ input[type=range] { padding: 0; accent-color: var(--accent); }
 @media (max-width: 420px) {
   .cards { grid-template-columns: 1fr; }
 }
+
+/* slash-command chips above the test-chat input */
+.chat-cmds { display:flex; flex-wrap:wrap; gap:6px; padding:8px 12px 0; }
+.chat-cmds button { font:inherit; font-size:11px; padding:4px 9px; border-radius:999px;
+  border:1px solid rgba(148,163,184,.35); background:rgba(148,163,184,.10); color:inherit; cursor:pointer; }
+.chat-cmds button:hover { background:rgba(148,163,184,.22); }

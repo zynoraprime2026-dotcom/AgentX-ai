@@ -28,6 +28,25 @@ Beyond the v1 agent manager:
 
 All of it lives in `lib/suite.js` (+ `lib/docs.js` document store and `lib/extract.js` text extraction), mounted from `server.js` with one call. New tables are created on boot and the JSON-file fallback still works.
 
+## Islamic commands (2026-11)
+
+Every chat, on Telegram, WhatsApp and the dashboard, answers these directly from
+the Ilm API without spending model tokens:
+
+| Command | What it does |
+| --- | --- |
+| `/prayer <city or lat,lng>` | today's five times, shown on that place's clock, plus the next prayer and how long until it |
+| `/quran 2:255` | Arabic ayah with translation (`/quran 2:255 ar.sahih` to pick a translation) |
+| `/hadith patience \| bukhari` | search 47,000+ narrations, optionally within one collection |
+| `/dua travel` | a du'a; `/dua` for a random one, `/dua save travel` keeps it, `/dua saved` lists them |
+| `/fiqh wudu` | the four madhhabs side by side, with the other related questions listed |
+| `/help` | the menu |
+
+A city the API does not know is resolved through OpenStreetMap and cached, and the
+timezone comes from timeapi.io, so times are correct anywhere in the world. The
+Telegram menu is registered on boot, so the commands show up as soon as someone
+types `/`. Anything that is not a command still goes to the model.
+
 ## Tech
 
 Node.js + Express, zero database (JSON file store in `data/`), vanilla JS frontend, single-page dashboard. Light enough to deploy anywhere: Render, Railway, Fly.io, or a $5 VPS.

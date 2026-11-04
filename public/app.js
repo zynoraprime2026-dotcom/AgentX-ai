@@ -625,6 +625,7 @@ $('#saveBilling').onclick = async () => {
 
 // ---------- chat console ----------
 function openChat(id) {
+  renderChatCommands();
   chatAgent = agents.find(x => x.id === id);
   $('#chatAgentName').textContent = chatAgent.emoji + ' ' + chatAgent.name;
   $('#chatBody').innerHTML = '';
@@ -633,6 +634,26 @@ function openChat(id) {
 }
 $('#chatClose').onclick = () => $('#chatDock').classList.add('hidden');
 $('#chatSend').onclick = sendChat;
+
+// slash commands the server answers without spending model tokens
+const CHAT_COMMANDS = [
+  ['/prayer Accra', 'Prayer times'],
+  ['/quran 2:255', 'Ayah'],
+  ['/hadith patience', 'Hadith'],
+  ['/dua travel', 'Du\'a'],
+  ['/fiqh wudu', 'Fiqh'],
+  ['/help', 'All commands']
+];
+function renderChatCommands() {
+  const bar = $('#chatCmds');
+  if (!bar || bar.childElementCount) return;
+  CHAT_COMMANDS.forEach(([text, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = label; b.title = text;
+    b.onclick = () => { const input = $('#chatText'); input.value = text; input.focus(); };
+    bar.appendChild(b);
+  });
+}
 $('#chatText').onkeydown = (e) => { if (e.key === 'Enter') sendChat(); };
 
 async function sendChat() {

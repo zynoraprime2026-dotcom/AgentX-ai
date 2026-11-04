@@ -262,13 +262,18 @@ async function getIlmKey() {
   try { return (await db.getSettings()).ilmApiKey || ''; } catch (e) { return ''; }
 }
 
-async function ilmCall(pathname, params) {
+// `as: 'json'` returns the whole parsed payload; the default keeps the model's
+// view small, which used to cut the JSON mid-string and break anyone parsing it.
+async function ilmCall(pathname, params, opts) {
   const qs = params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')) : '';
-  const r = await fetch(ILM_API_URL + pathname + qs, { headers: { 'x-api-key': await getIlmKey() } });
+  const r = await fetch(ILM_API_URL + pathname + qs, {
+    headers: { 'x-api-key': await getIlmKey() }, signal: AbortSignal.timeout(20000)
+  });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error('Ilm API error: ' + JSON.stringify(d).slice(0, 200));
+  if (!r.ok) throw new Error('Ilm API error (' + r.status + '): ' + JSON.stringify(d).slice(0, 200));
+  if (opts && opts.as === 'json') return d;
   const str = typeof d === 'string' ? d : JSON.stringify(d);
-  return str.length > 2200 ? str.slice(0, 2200) + '…[truncated]' : str;
+  return str.length > 2200 ? str.slice(0, 2200) + '…' : str;
 }
 
 // ---------- Studio API (images + content scaffolding) ----------
@@ -612,6 +617,14 @@ api.post('/chat/:id', async (req, res) => {
   const lastUser = [...history].reverse().find(m => m.role === 'user');
   const started = Date.now();
   const base = { ownerId: req.user.id, agentId: a.id, agentName: a.name, channel: 'web' };
+  if (lastUser && /^\//.test(String(lastUser.content || '').trim())) {
+    const out = await commands.handle(lastUser.content, { ownerId: req.user.id, channel: 'web', key: 'user:' + req.user.id });
+    if (out) {
+      suite.logEvent({ ...base, kind: 'message', query: String(lastUser.content).slice(0, 300) });
+      suite.logEvent({ ...base, kind: 'reply', latency: Date.now() - started, query: String(lastUser.content).slice(0, 300) });
+      return res.json({ reply: out, model: 'ilm-commands' });
+    }
+  }
   suite.logEvent({ ...base, kind: 'message', query: lastUser ? String(lastUser.content || '').slice(0, 300) : '' });
   try {
     const out = await groqAsk(a, history, { channel: 'web', chatId: req.user.id });
@@ -709,7 +722,7 @@ async function handleTgMessage(msg) {
     if (cmd === '/start' || cmd === '/help') {
       return tgSend(chatId,
         '👋 Welcome to AgentX!\n\nI am an AI assistant running on Groq with live access to prayer times, Quran, hadith, duas and more.\n' +
-        'Commands:\n/agents — list available assistants\n/agent <name> — talk to a specific one\n/remind 30m drink water — set a reminder\n/reminders — your pending reminders\n\nJust type your question.\n/subscribe <city> — daily Fajr time + morning dua');
+        'Commands:\n/agents — list available assistants\n/agent <name> — talk to a specific one\n/remind 30m drink water — set a reminder\n/reminders — your pending reminders\n/subscribe <city> — daily Fajr time + morning dua\n\n' + commands.helpText() + '\n\nJust type your question.');
     }
     if (cmd === '/agents') {
       const live = agents.filter(a => a.status === 'live');
@@ -743,6 +756,11 @@ async function handleTgMessage(msg) {
       if (!mine.length) return tgSend(chatId, 'No pending reminders. Set one with /remind 30m drink water.');
       return tgSend(chatId, 'Pending reminders:\n' + mine.slice(0, 10).map(r => '• ' + r.dueAt.slice(0, 16).replace('T', ' ') + ' UTC — ' + r.title).join('\n'));
     }
+    // prayer, quran, hadith, dua, fiqh — answered straight from the Ilm API
+    const islamic = await commands.handle(text, {
+      ownerId: anyAgent && anyAgent.ownerId ? anyAgent.ownerId : null, channel: 'telegram', key: String(chatId)
+    });
+    if (islamic) return tgSend(chatId, islamic);
   }
 
   const agent = pickAgent(agents, chatId);
@@ -919,6 +937,11 @@ async function handleWa(req) {
     const allowed = suite.shouldAnswerGroup({ isGroup: true, mode: agent.groupReply, text, botNames: [agent.name, 'agentx'] });
     if (!allowed) { console.log('[WA group] not addressed, staying silent'); return; }
   }
+  const waCmd = await commands.handle(text, {
+    ownerId: agent.ownerId || null, channel: 'whatsapp', key: String(hkey)
+  });
+  if (waCmd) return reply(waCmd);
+
   const history = [...(await db.getHistory('whatsapp', hkey)), { role: 'user', content: text }].slice(-12);
   console.log('[WA use]', agent.name, linked ? '(linked number)' : '(shared number)');
   const waBase = { ownerId: agent.ownerId, agentId: agent.id, agentName: agent.name, channel: 'whatsapp' };
@@ -943,6 +966,30 @@ async function handleWa(req) {
     suite.logEvent({ ...waBase, kind: 'error', error: String(e.message).slice(0, 200) });
     await reply('Sorry, I could not answer right now.').catch(() => {});
   }
+}
+
+// Publish the command menu so Telegram shows it behind the "/" button.
+async function registerTelegramCommands() {
+  if (!TG_TOKEN) return;
+  const list = [
+    ['help', 'What this assistant can do'],
+    ['prayer', "Today's prayer times, e.g. /prayer Accra"],
+    ['quran', 'Ayah with translation, e.g. /quran 2:255'],
+    ['hadith', 'Search narrations, e.g. /hadith patience'],
+    ['dua', "A du'a, e.g. /dua travel — /dua saved for your list"],
+    ['fiqh', 'The four schools compared, e.g. /fiqh wudu'],
+    ['remind', 'Set a reminder, e.g. /remind 30m drink water'],
+    ['subscribe', 'Daily Fajr time for your city, e.g. /subscribe Accra'],
+    ['agents', 'List the available assistants']
+  ].map(([command, description]) => ({ command, description }));
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/setMyCommands`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commands: list }), signal: AbortSignal.timeout(15000)
+    });
+    const d = await r.json().catch(() => ({}));
+    console.log('[tg] command menu ' + (d.ok ? 'registered' : 'not registered: ' + JSON.stringify(d).slice(0, 100)));
+  } catch (e) { console.log('[tg commands]', String(e.message).slice(0, 120)); }
 }
 
 // ---------- Fajr broadcast (subscribers) ----------
@@ -1068,6 +1115,8 @@ api.delete('/admin/users/:id', async (req, res) => {
 
 api.get('/broadcast/subscribers', async (req, res) => { if (!req.user.founder) return res.status(403).json({ error: 'founder only' }); res.json(await db.listSubscribers()); });
 
+const commands = require('./lib/commands').create({ ilm: (path, params) => ilmCall(path, params, { as: 'json' }) });
+
 suite.attach({
   api,
   db,
@@ -1130,6 +1179,9 @@ if (process.env.VERCEL) {
   ready.catch(e => { console.error('Init failed:', e); });
 } else {
   ready.then(() => {
-    app.listen(PORT, () => console.log('AgentX dashboard running on http://localhost:' + PORT + (db.HAS_PG ? ' [postgres]' : ' [json files]')));
+    app.listen(PORT, () => {
+      console.log('AgentX dashboard running on http://localhost:' + PORT + (db.HAS_PG ? ' [postgres]' : ' [json files]'));
+      registerTelegramCommands();
+    });
   }).catch(e => { console.error('Failed to start:', e); process.exit(1); });
 }

@@ -61,5 +61,117 @@
     "status": "live",
     "createdAt": "2026-10-08T02:41:34.781Z",
     "messagesHandled": 48
+  },
+  {
+    "id": "agx_lx5yi9f",
+    "name": "Madrasa Test",
+    "emoji": "🤖",
+    "description": "",
+    "systemPrompt": "You are a helpful assistant.",
+    "model": "openai/gpt-oss-120b",
+    "platforms": {
+      "whatsapp": {
+        "enabled": false,
+        "autoReply": true
+      },
+      "telegram": {
+        "enabled": false,
+        "autoReply": true
+      }
+    },
+    "persona": {},
+    "languages": [],
+    "autoLanguage": true,
+    "groupReply": "mention",
+    "sortOrder": 0,
+    "knowledgeEnabled": true,
+    "status": "draft",
+    "createdAt": "2026-11-04T08:07:39.712Z",
+    "messagesHandled": 0,
+    "ownerId": "u_ffc4eaf085"
+  },
+  {
+    "id": "agx_3hrcwjm",
+    "name": "Madrasa Test",
+    "emoji": "🤖",
+    "description": "",
+    "systemPrompt": "You are a helpful assistant.",
+    "model": "openai/gpt-oss-120b",
+    "platforms": {
+      "whatsapp": {
+        "enabled": false,
+        "autoReply": true
+      },
+      "telegram": {
+        "enabled": false,
+        "autoReply": true
+      }
+    },
+    "persona": {},
+    "languages": [],
+    "autoLanguage": true,
+    "groupReply": "mention",
+    "sortOrder": 0,
+    "knowledgeEnabled": true,
+    "status": "draft",
+    "createdAt": "2026-11-04T08:07:53.440Z",
+    "messagesHandled": 0,
+    "ownerId": "u_953f565a29"
+  },
+  {
+    "id": "agx_kiigf2y",
+    "name": "Madrasa Test",
+    "emoji": "🤖",
+    "description": "",
+    "systemPrompt": "You are a helpful assistant.",
+    "model": "openai/gpt-oss-120b",
+    "platforms": {
+      "whatsapp": {
+        "enabled": false,
+        "autoReply": true
+      },
+      "telegram": {
+        "enabled": false,
+        "autoReply": true
+      }
+    },
+    "persona": {},
+    "languages": [],
+    "autoLanguage": true,
+    "groupReply": "mention",
+    "sortOrder": 0,
+    "knowledgeEnabled": true,
+    "status": "draft",
+    "createdAt": "2026-11-04T08:08:07.444Z",
+    "messagesHandled": 0,
+    "ownerId": "u_503d92f57e"
+  },
+  {
+    "id": "agx_2foxv7w",
+    "name": "Madrasa Test",
+    "emoji": "🤖",
+    "description": "",
+    "systemPrompt": "You are a helpful assistant.",
+    "model": "openai/gpt-oss-120b",
+    "platforms": {
+      "whatsapp": {
+        "enabled": false,
+        "autoReply": true
+      },
+      "telegram": {
+        "enabled": false,
+        "autoReply": true
+      }
+    },
+    "persona": {},
+    "languages": [],
+    "autoLanguage": true,
+    "groupReply": "mention",
+    "sortOrder": 0,
+    "knowledgeEnabled": true,
+    "status": "draft",
+    "createdAt": "2026-11-04T08:11:17.077Z",
+    "messagesHandled": 0,
+    "ownerId": "u_420063b99d"
   }
 ]
