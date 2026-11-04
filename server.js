@@ -653,6 +653,17 @@ async function groqAsk(agent, history, ctx) {
       });
       if (out.ok) break;
       const em = String(out.error || '');
+      if (out.attempts) {
+        const g = out.attempts[0] || {};
+        try {
+          await require('./lib/suite').logEvent({
+            ownerId: ctx && ctx.ownerId, agentId: agent.id, agentName: agent.name,
+            channel: 'web', kind: 'provider_error',
+            error: String(g.error || 'primary lane failed').slice(0, 200),
+            provider: g.provider || 'gemini', status: g.status || 0
+          });
+        } catch (e) { /* diagnostics must never break a reply */ }
+      }
       if ((out.status === 429 || out.status === 503) && waited < 45000) {
         const w = Math.min(Number(out.wait) || 8000, 45000);
         waited += w;
