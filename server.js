@@ -1203,6 +1203,8 @@ api.get('/admin/stats', async (req, res) => {
     unownedAgents: agents.filter(a => !a.ownerId).length,
     subscribers: (await db.listSubscribers()).length,
     storage: db.HAS_PG ? 'postgres' : 'files',
+    // Render sets RENDER_GIT_COMMIT, so a deploy can be confirmed instead of guessed.
+    version: String(process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || null,
     dbError: db.lastDbError ? db.lastDbError.slice(0, 300) : null
   });
 });
