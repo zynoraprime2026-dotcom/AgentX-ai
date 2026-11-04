@@ -244,6 +244,21 @@ const store = {
     delete s[token]; writeJson(path.join(DATA_DIR, 'sessions.json'), s);
   },
 
+  // A password change must end every other signed-in session for that account.
+  async clearUserSessions(userId, keepToken) {
+    if (pool) {
+      if (keepToken) { await pool.query("DELETE FROM agx_sessions WHERE user_data->>'id'=$1 AND token<>$2", [userId, keepToken]); return; }
+      await pool.query("DELETE FROM agx_sessions WHERE user_data->>'id'=$1", [userId]);
+      return;
+    }
+    const all = readJson(path.join(DATA_DIR, 'sessions.json'), {});
+    for (const t of Object.keys(all)) {
+      const u = all[t] && all[t].user;
+      if (u && u.id === userId && t !== keepToken) delete all[t];
+    }
+    writeJson(path.join(DATA_DIR, 'sessions.json'), all);
+  },
+
   // ---------- settings ----------
   async getSettings() {
     if (pool) {
