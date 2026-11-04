@@ -657,7 +657,7 @@ async function groqAsk(agent, history, ctx) {
       });
       return { reply: (forced.ok && forced.text) ? forced.text : FALLBACK_REPLY, model: agent.model };
     }
-    messages.push({ role: 'assistant', content: text, tool_calls: calls });
+    messages.push({ role: 'assistant', content: text, tool_calls: calls, provider_parts: out.provider_parts || null });
     for (const c of calls) {
       const result = await runTool(c.name, c.args || {}, ctx);
       messages.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: String(result == null ? '' : result) });
