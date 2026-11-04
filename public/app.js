@@ -87,7 +87,7 @@ $('#logoutBtn').onclick = async () => {
 const views = {
   overview: renderOverview, agents: renderAgents, analytics: renderAnalytics,
   reminders: loadReminders, triggers: loadTriggers, channels: () => renderHealth(),
-  billing: loadBilling, settings: () => {}
+  billing: loadBilling, settings: loadHealth
 };
 
 function switchView(name) {
@@ -634,6 +634,33 @@ function openChat(id) {
 }
 $('#chatClose').onclick = () => $('#chatDock').classList.add('hidden');
 $('#chatSend').onclick = sendChat;
+
+// System health card: a readable version of /api/status, so nobody has to read JSON.
+$('#healthRefresh') && ($('#healthRefresh').onclick = loadHealth);
+
+async function loadHealth() {
+  const box = $('#healthBody');
+  if (!box) return;
+  box.textContent = 'Checking…';
+  try {
+    const d = await api('/status');
+    const rows = [
+      ['Assistant running', d.ok ? 'yes' : 'no'],
+      ['Keeps itself awake', d.keepAlive && d.keepAlive.on ? 'yes, every ' + d.keepAlive.everyMinutes + ' min' : 'no (sleeps after 15 min idle)'],
+      ['Database', d.storage === 'postgres' ? 'Postgres' : 'local files'],
+      ['Groq (the model)', d.groqConfigured ? 'connected' : 'not set'],
+      ['Islamic knowledge (Ilm)', d.ilmConnected ? 'connected' : 'not set'],
+      ['Telegram', d.telegramConnected ? 'connected' : 'not set'],
+      ['WhatsApp', d.whatsappConnected ? 'connected' : 'not set'],
+      ['Studio images/video', d.studioConnected ? 'connected' : 'not set']
+    ];
+    box.innerHTML = rows.map(([k, v]) =>
+      '<div class="row-between" style="padding:3px 0"><span>' + k + '</span><strong>' + v + '</strong></div>'
+    ).join('');
+  } catch (e) {
+    box.textContent = 'Could not reach the server just now (' + e.message + '). Try Refresh.';
+  }
+}
 
 // slash commands the server answers without spending model tokens
 const CHAT_COMMANDS = [
