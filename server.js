@@ -1203,8 +1203,10 @@ api.get('/admin/stats', async (req, res) => {
     unownedAgents: agents.filter(a => !a.ownerId).length,
     subscribers: (await db.listSubscribers()).length,
     storage: db.HAS_PG ? 'postgres' : 'files',
-    // Render sets RENDER_GIT_COMMIT, so a deploy can be confirmed instead of guessed.
-    version: String(process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || null,
+    // A build number the repo owns: Render does not expose its commit at runtime.
+    version: (() => { try { return 'v' + require('./package.json').version; } catch (e) { return null; } })(),
+    commit: String(process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || null,
+    provider: await providers.diagnostics().catch(() => null),
     dbError: db.lastDbError ? db.lastDbError.slice(0, 300) : null
   });
 });
