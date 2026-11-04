@@ -262,6 +262,10 @@ api.get('/status', async (req, res) => {
     keepAlive: keepAlive.on ? { on: true, everyMinutes: keepAlive.everyMinutes, url: keepAlive.url } : { on: false },
     storage: db.HAS_PG ? 'postgres' : 'files',
     dbError: Boolean(db.lastDbError) && !db.HAS_PG,
+    // A build number the repo owns: Render does not expose its commit at runtime.
+    version: (() => { try { return 'v' + require('./package.json').version; } catch (e) { return null; } })(),
+    commit: String(process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || null,
+    provider: await providers.diagnostics().catch(() => null),
     adminAuth: Boolean(process.env.ADMIN_KEY)
   });
 });
@@ -1203,10 +1207,6 @@ api.get('/admin/stats', async (req, res) => {
     unownedAgents: agents.filter(a => !a.ownerId).length,
     subscribers: (await db.listSubscribers()).length,
     storage: db.HAS_PG ? 'postgres' : 'files',
-    // A build number the repo owns: Render does not expose its commit at runtime.
-    version: (() => { try { return 'v' + require('./package.json').version; } catch (e) { return null; } })(),
-    commit: String(process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || null,
-    provider: await providers.diagnostics().catch(() => null),
     dbError: db.lastDbError ? db.lastDbError.slice(0, 300) : null
   });
 });
