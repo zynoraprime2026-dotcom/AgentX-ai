@@ -211,9 +211,15 @@ api.get('/providers', async (req, res) => {
     messages: [{ role: 'system', content: 'You are a health check.' }, { role: 'user', content: 'Reply with the single word: ready' }],
     maxTokens: 20, temperature: 0
   })) : { ok: false, error: 'not configured' };
+  const toolProbe = String(req.query.tools || '') === '1' && info.gemini.configured ? await probe(() => providers.geminiChat({
+    messages: [{ role: 'system', content: 'You are a health check.' }, { role: 'user', content: 'Look up the value 42, then reply with it.' }],
+    tools: [{ type: 'function', function: { name: 'lookup', description: 'Look up a number', parameters: { type: 'object', properties: { query: { type: 'string' } } } } }],
+    maxTokens: 512, temperature: 0
+  })) : null;
   const candidates = await providers.geminiModels(false).catch(() => []);
   res.json({
-    gemini: { ...info.gemini, candidates: candidates.slice(0, 6), ok: Boolean(gem.ok), reply: gem.ok ? String(gem.text).slice(0, 40) : null, error: gem.ok ? null : gem.error },
+    gemini: { ...info.gemini, candidates: candidates.slice(0, 6), ok: Boolean(gem.ok), reply: gem.ok ? String(gem.text).slice(0, 40) : null, error: gem.ok ? null : gem.error,
+      toolRound: toolProbe ? { ok: Boolean(toolProbe.ok), calls: (toolProbe.calls || []).length, error: toolProbe.ok ? null : String(toolProbe.error || '').slice(0, 300) } : null },
     groq: info.groq
   });
 });
@@ -657,8 +663,9 @@ async function groqAsk(agent, history, ctx) {
       });
       if (out.ok) break;
       const em = String(out.error || '');
-      if (out.attempts) {
-        const g = out.attempts[0] || {};
+      const fell = out.fellBack || out.attempts;
+      if (fell) {
+        const g = fell[0] || {};
         try {
           await require('./lib/suite').logEvent({
             ownerId: ctx && ctx.ownerId, agentId: agent.id, agentName: agent.name,
