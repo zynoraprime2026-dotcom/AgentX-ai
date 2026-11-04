@@ -384,129 +384,54 @@ async function turathCall(pathname, params) {
 const TURATH_TOOLS = TURATH_API_KEY ? [
   { type: 'function', function: {
       name: 'search_manuscripts',
-      description: 'Search the Turath database of Islamic manuscripts (47 records: Qurans, biographical dictionaries, scholarly works) by keyword, subject, language, region or century.',
+      description: 'Search Islamic manuscripts by keyword, subject, language, region or century.',
       parameters: { type: 'object', properties: {
-        query: { type: 'string', description: 'Keyword: title, author, holding library or description' },
-        subject: { type: 'string', description: 'Subject, e.g. Quran, Hadith, Biography & Scholarship, Fiqh' },
-        language: { type: 'string', description: 'Arabic, Persian, Malay (Jawi script)…' },
-        region: { type: 'string', description: 'Region of origin, e.g. Hijaz, Sahel, Andalusia' },
-        century: { type: 'string', description: 'Hijri century, e.g. 10' }
-      }, required: [] } } },
+        query: { type: 'string' }, subject: { type: 'string' },
+        language: { type: 'string' }, region: { type: 'string' }, century: { type: 'string' }
+      } } } },
   { type: 'function', function: {
       name: 'get_manuscript',
-      description: 'Fetch the full record of one Turath manuscript by its numeric id: title, author, date, script, holding library, description and any digital or image link.',
-      parameters: { type: 'object', properties: { id: { type: 'string', description: 'Manuscript id from a previous search' } }, required: ['id'] } } },
+      description: 'One manuscript by id.',
+      parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } } },
   { type: 'function', function: {
       name: 'manuscript_of_the_day',
-      description: 'Get the Turath manuscript featured for today. Use it as a warm opener or a daily knowledge share.',
-      parameters: { type: 'object', properties: {}, required: [] } } },
+      description: 'Featured manuscript today.',
+      parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: {
       name: 'search_scholars',
-      description: 'Search Turath scholar biographies (classical Islamic scholars, their era, field, region and works).',
-      parameters: { type: 'object', properties: {
-        query: { type: 'string', description: 'Scholar name, work or topic' },
-        field: { type: 'string', description: 'Field of scholarship, e.g. Hadith, Tafsir, Fiqh, History' }
-      }, required: [] } } },
+      description: 'Search scholars by name or field.',
+      parameters: { type: 'object', properties: { query: { type: 'string' }, field: { type: 'string' } } } } },
   { type: 'function', function: {
       name: 'search_historical_events',
-      description: 'Search Turath Islamic historical events and chronology by keyword or year.',
-      parameters: { type: 'object', properties: {
-        query: { type: 'string', description: 'Event keyword, e.g. Timbuktu, Andalusia, Hajj' },
-        year: { type: 'string', description: 'Hijri year, e.g. 1200' }
-      }, required: [] } } }
+      description: 'Search historical events by keyword or year.',
+      parameters: { type: 'object', properties: { query: { type: 'string' }, year: { type: 'string' } } } } }
 ] : [];
 
 const TOOLS = [
-  {
-    type: 'function',
-    function: {
+  { type: 'function', function: {
       name: 'get_prayer_times',
-      description: 'Get Islamic prayer times (Fajr, Dhuhr, Asr, Maghrib, Isha) for a city. Use for any question about salat/salah times.',
-      parameters: {
-        type: 'object',
-        properties: {
-          city: { type: 'string', description: 'City name, e.g. Tarkwa, Accra, Kumasi, Makkah' },
-          date: { type: 'string', description: 'Optional date YYYY-MM-DD' }
-        },
-        required: ['city']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
+      description: 'Prayer times for a city.',
+      parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } } },
+  { type: 'function', function: {
       name: 'get_quran_ayah',
-      description: 'Get a Quran verse with Arabic text and translation. Use when the user quotes, references or asks about a specific verse.',
-      parameters: {
-        type: 'object',
-        properties: {
-          surah: { type: 'integer', description: 'Surah number 1-114' },
-          ayah: { type: 'integer', description: 'Ayah number within the surah' },
-          translation: { type: 'string', description: 'Optional translation key, e.g. en.sahih, ur.jalandhari, fr.hamidullah' }
-        },
-        required: ['surah', 'ayah']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
+      description: 'A Quran verse with Arabic and translation.',
+      parameters: { type: 'object', properties: { surah: { type: 'string' }, ayah: { type: 'string' } }, required: ['surah', 'ayah'] } } },
+  { type: 'function', function: {
       name: 'search_hadith',
-      description: 'Search hadith collections (Bukhari, Muslim, Tirmidhi, Nasai, Abu Dawud, Ibn Majah) by keyword. Use when the user asks about a hadith on a topic.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Search keywords, e.g. intention, patience' },
-          collection: { type: 'string', description: 'Optional collection slug, e.g. bukhari, muslim' },
-          language: { type: 'string', description: 'Optional 2-letter language code, e.g. en, ar, fr' }
-        },
-        required: []
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
+      description: 'Search hadith by keyword.',
+      parameters: { type: 'object', properties: { query: { type: 'string' } }, required: [] } } },
+  { type: 'function', function: {
       name: 'search_dictionary',
-      description: 'Look up an Arabic word or English meaning in the Islamic dictionary, or get all words from an Arabic root (3 letters).',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Arabic word, English meaning, or 3-letter root like ص-ب-ر' },
-          mode: { type: 'string', enum: ['search', 'root'], description: '"root" to look up all words from an Arabic root' }
-        },
-        required: []
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
+      description: 'Arabic word or root lookup.',
+      parameters: { type: 'object', properties: { query: { type: 'string' } }, required: [] } } },
+  { type: 'function', function: {
       name: 'get_dua',
-      description: 'Get duas (supplications). Use when the user asks for a dua on a topic like morning, distress, forgiveness, or a random one.',
-      parameters: {
-        type: 'object',
-        properties: {
-          search: { type: 'string', description: 'Topic keywords to search, e.g. morning, distress, forgiveness' },
-          random: { type: 'boolean', description: 'True for a random dua' }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
+      description: 'Duas by topic, or a random one.',
+      parameters: { type: 'object', properties: { search: { type: 'string' } } } } },
+  { type: 'function', function: {
       name: 'get_fiqh_ruling',
-      description: 'Get comparative fiqh rulings across the 4 madhabs on a topic, e.g. wudu, fasting, zakat.',
-      parameters: {
-        type: 'object',
-        properties: {
-          topic: { type: 'string', description: 'The fiqh topic, e.g. wudu, tayammum' }
-        },
-        required: ['topic']
-      }
-    }
-  }
+      description: 'Comparative fiqh ruling across the four madhabs.',
+      parameters: { type: 'object', properties: { topic: { type: 'string' } }, required: ['topic'] } } }
 ];
 
 const PROFILE_TOOLS = [
@@ -706,6 +631,7 @@ async function groqAsk(agent, history, ctx) {
       if (r.status === 429) {
         const busy = new Error('I am at my limit for this minute. Give me a moment and ask again.');
         busy.friendly = true;
+        busy.raw = em;
         throw busy;
       }
       throw new Error(em);
@@ -771,7 +697,7 @@ api.post('/chat/:id', async (req, res) => {
     }
     res.json(out);
   } catch (e) {
-    suite.logEvent({ ...base, kind: 'error', error: String(e.message).slice(0, 200) });
+    suite.logEvent({ ...base, kind: 'error', error: String(e.raw || e.message).slice(0, 400) });
     // A busy model is not an error the user should see as a broken page.
     if (e.friendly) return res.json({ reply: e.message, model: 'busy' });
     res.status(502).json({ error: e.message });
