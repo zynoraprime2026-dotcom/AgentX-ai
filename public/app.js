@@ -868,7 +868,7 @@ function renderHealth() {
   const tick = suiteStatus && suiteStatus.tickerRunning;
   $('#healthCards').innerHTML =
     item('Groq (LLM brain)', health.groqConfigured, health.groqConfigured ? 'Agents think via Groq' : 'Add key in Settings') +
-    item('Telegram', health.telegramConnected, health.telegramConnected ? '@AgentXtechbot webhook live' : 'Not configured') +
+    item('Telegram', health.telegramConnected, health.telegramConnected ? (health.telegramBot ? health.telegramBot + ' connected' : 'webhook live') : 'Not configured') +
     item('WhatsApp', health.whatsappConnected, health.whatsappConnected ? 'Cloud API ready' : 'Needs Meta credentials') +
     item('Ilm API tools', health.ilmConnected, health.ilmConnected ? 'Prayer times, Quran, hadith live' : 'No Ilm key') +
     item('Reminders + triggers', Boolean(tick), tick ? 'Background ticker every 60s' : 'Uses /api/cron/tick on serverless hosts');
