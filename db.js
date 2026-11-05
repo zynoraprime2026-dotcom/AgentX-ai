@@ -55,6 +55,7 @@ async function initPg(ssl) {
     ALTER TABLE agx_agents ADD COLUMN IF NOT EXISTS knowledge_enabled boolean DEFAULT true;
     ALTER TABLE agx_agents ADD COLUMN IF NOT EXISTS toolsets jsonb DEFAULT '[]';
     ALTER TABLE agx_agents ADD COLUMN IF NOT EXISTS source text DEFAULT 'user';
+    ALTER TABLE agx_agents ADD COLUMN IF NOT EXISTS is_main boolean DEFAULT false;
     CREATE TABLE IF NOT EXISTS agx_users (
       id text PRIMARY KEY, email text UNIQUE NOT NULL, name text, founder boolean DEFAULT false,
       pass text NOT NULL, created_at text
@@ -93,7 +94,8 @@ function rowToAgent(r) {
     autoLanguage: r.auto_language !== false, groupReply: r.group_reply || 'mention',
     sortOrder: r.sort_order || 0, knowledgeEnabled: r.knowledge_enabled !== false,
     toolsets: Array.isArray(r.toolsets) ? r.toolsets : [],
-    source: r.source || 'user'
+    source: r.source || 'user',
+    isMain: r.is_main === true
   };
 }
 
@@ -109,14 +111,14 @@ const store = {
     if (pool) {
       await pool.query(
         `INSERT INTO agx_agents (id,name,emoji,description,system_prompt,model,platforms,status,created_at,messages_handled,owner_id,wa_phone_id,
-           persona,languages,auto_language,group_reply,sort_order,knowledge_enabled,toolsets,source)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+           persona,languages,auto_language,group_reply,sort_order,knowledge_enabled,toolsets,source,is_main)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
         [a.id, a.name, a.emoji || '🤖', a.description || '', a.systemPrompt || '', a.model || 'openai/gpt-oss-120b',
          JSON.stringify(a.platforms || {}), a.status || 'draft', a.createdAt || new Date().toISOString(),
          a.messagesHandled || 0, a.ownerId || null, a.waPhoneId || null,
          JSON.stringify(a.persona || {}), JSON.stringify(a.languages || []), a.autoLanguage !== false,
          a.groupReply || 'mention', a.sortOrder || 0, a.knowledgeEnabled !== false, JSON.stringify(a.toolsets || []),
-         a.source || 'user']);
+         a.source || 'user', a.isMain === true]);
       return;
     }
     const all = readJson(path.join(DATA_DIR, 'agents.json'), []);
@@ -127,13 +129,13 @@ const store = {
       await pool.query(
         `UPDATE agx_agents SET name=$2,emoji=$3,description=$4,system_prompt=$5,model=$6,platforms=$7,status=$8,messages_handled=$9,
            owner_id=$10,wa_phone_id=$11,persona=$12,languages=$13,auto_language=$14,group_reply=$15,sort_order=$16,knowledge_enabled=$17,
-           toolsets=$18,source=$19
+           toolsets=$18,source=$19,is_main=$20
          WHERE id=$1`,
         [a.id, a.name, a.emoji || '🤖', a.description || '', a.systemPrompt || '', a.model || 'openai/gpt-oss-120b',
          JSON.stringify(a.platforms || {}), a.status || 'draft', a.messagesHandled || 0, a.ownerId || null, a.waPhoneId || null,
          JSON.stringify(a.persona || {}), JSON.stringify(a.languages || []), a.autoLanguage !== false,
          a.groupReply || 'mention', a.sortOrder || 0, a.knowledgeEnabled !== false, JSON.stringify(a.toolsets || []),
-         a.source || 'user']);
+         a.source || 'user', a.isMain === true]);
       return;
     }
     const all = readJson(path.join(DATA_DIR, 'agents.json'), []);
