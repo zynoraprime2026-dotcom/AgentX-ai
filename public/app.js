@@ -123,7 +123,30 @@ function renderOverview() {
     el.innerHTML = `<div class="num">${Object.keys(subs || {}).length}</div><div class="lbl">Fajr subscribers</div>`;
     $('#statCards').appendChild(el);
   }).catch(() => {});
-  $('#overviewAgents').innerHTML = agents.filter(a => a.status === 'live').map(a => `
+  const main = agents.find(a => a.isMain) || agents.find(a => a.status === 'live') || agents[0];
+  const mainCard = $('#mainAgentCard');
+  if (mainCard) {
+    mainCard.innerHTML = main ? `
+      <div class="row-between">
+        <div>
+          <div class="muted" style="font-size:12px">MAIN AGENT</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+            <span style="font-size:22px">${esc(main.emoji)}</span>
+            <strong style="font-size:18px">${esc(main.name)}</strong>
+            ${pill(main.status)}
+            ${main.isMain ? '' : '<span class="muted" style="font-size:12px">(busiest live agent, tap ☆ on a card to fix this)</span>'}
+          </div>
+          <div class="muted" style="font-size:13px;margin-top:4px">${esc(main.description || 'No description yet')}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="muted" style="font-size:12px">${main.messagesHandled || 0} messages</div>
+          <button class="btn primary" id="mainAgentChat" style="margin-top:6px">Open chat</button>
+        </div>
+      </div>` : '<p class="muted">No agents yet.</p>';
+    const btn = $('#mainAgentChat');
+    if (btn && main) btn.onclick = () => openChat(main.id);
+  }
+  $('#overviewAgents').innerHTML = agents.filter(a => a.status === 'live' && (!main || a.id !== main.id)).map(a => `
     <div class="agent-card static">
       <div class="top"><span class="emoji">${esc(a.emoji)}</span><span class="name">${esc(a.name)}</span>${pill(a.status)}</div>
       <div class="muted" style="font-size:13px">${esc(a.description || '')}</div>
@@ -170,6 +193,7 @@ function renderAgents() {
         <label class="mini" title="Answer on Telegram"><span>TG</span><span class="toggle ${tg ? 'on' : ''}" data-ch="telegram" data-agent="${a.id}"></span></label>
         <div class="foot-actions">
           ${pill(a.status)}
+          <button class="icon-btn" data-main="${a.id}" title="${a.isMain ? 'This is the main agent' : 'Make this the main agent'}">${a.isMain ? '★' : '☆'}</button>
           <button class="icon-btn" data-test="${a.id}" title="Test chat">💬</button>
           <button class="icon-btn" data-edit="${a.id}" title="Open full editor">⚙️</button>
           <button class="icon-btn danger" data-del="${a.id}" title="Delete agent">🗑</button>
@@ -178,6 +202,10 @@ function renderAgents() {
     </div>`;
   }).join('') || '<p class="muted">No agents match that search.</p>';
 
+  grid.querySelectorAll('[data-main]').forEach(b => b.onclick = async () => {
+    try { await api('/agents/' + b.dataset.main + '/main', { method: 'POST' }); await load(); toast('Main agent set'); }
+    catch (e) { toast(e.message); }
+  });
   grid.querySelectorAll('[data-test]').forEach(b => b.onclick = () => openChat(b.dataset.test));
   grid.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openEditor(b.dataset.edit));
   grid.querySelectorAll('[data-quick]').forEach(b => b.onclick = () => openQuickEdit(b.dataset.quick));
@@ -257,6 +285,37 @@ function wireDraftBox() {
     } catch (e) { toast(e.message); }
     finally { btn.disabled = false; btn.textContent = 'Draft it'; }
   };
+}
+
+function describeValue(field, v) {
+  if (field === 'telegram' || field === 'whatsapp') return v ? 'on' : 'off';
+  const t = String(v == null ? '' : v);
+  return t.length > 120 ? t.slice(0, 120) + '…' : (t || '(empty)');
+}
+
+function renderPendingChange(c) {
+  const body = $('#chatBody');
+  if (!body || !c) return;
+  const card = document.createElement('div');
+  card.className = 'msg';
+  card.style.cssText = 'display:grid;gap:8px;border:1px dashed var(--line);border-radius:10px;padding:10px';
+  const fieldLabel = { name: 'Name', description: 'Description', systemPrompt: 'Instructions', status: 'Status', telegram: 'Telegram', whatsapp: 'WhatsApp' }[c.field] || c.field;
+  card.innerHTML = `<div><strong>${esc(c.agentName)}</strong> · ${esc(fieldLabel)}</div>
+    <div class="muted" style="font-size:12px">from <code>${esc(describeValue(c.field, c.from))}</code> to <code>${esc(describeValue(c.field, c.to))}</code></div>
+    <div style="display:flex;gap:8px"><button class="btn primary" id="pcApply">Apply</button><button class="btn" id="pcDrop">Discard</button></div>`;
+  body.appendChild(card);
+  card.querySelector('#pcDrop').onclick = () => card.remove();
+  card.querySelector('#pcApply').onclick = async () => {
+    const btn = card.querySelector('#pcApply');
+    btn.disabled = true; btn.textContent = 'Applying…';
+    try {
+      await api('/agents/' + c.agentId, { method: 'PUT', body: c.patch });
+      card.remove();
+      await load();
+      toast('Change applied');
+    } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = 'Apply'; }
+  };
+  body.scrollTop = body.scrollHeight;
 }
 
 function renderDraft(d, remaining) {
@@ -778,6 +837,10 @@ async function sendChat() {
     const d = await api('/chat/' + chatAgent.id, { method: 'POST', body: { history } });
     thinking.textContent = d.reply;
     thinking.classList.remove('muted');
+    if (d.pendingChange) {
+      renderPendingChange(d.pendingChange);
+      thinking.insertAdjacentHTML('beforeend', '<div class="muted" style="font-size:12px;margin-top:6px">Nothing saved yet: apply or discard the change below.</div>');
+    }
     if (d.draft) {
       renderDraft(d.draft, null);
       thinking.insertAdjacentHTML('beforeend', '<div class="muted" style="font-size:12px;margin-top:6px">Draft ready on the 🤖 Agents page: review it there and tap Create.</div>');

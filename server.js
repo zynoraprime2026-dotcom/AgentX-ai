@@ -454,10 +454,24 @@ api.post('/agents', async (req, res) => {
   res.status(201).json(await publicAgent(agent));
 });
 
+// One agent is the front door: marking a new one clears the old flag.
+api.post('/agents/:id/main', async (req, res) => {
+  const mine = (await db.listAgents()).filter(a => a.ownerId === req.user.id);
+  const target = mine.find(a => a.id === req.params.id);
+  if (!target) return res.status(404).json({ error: 'agent not found' });
+  for (const a of mine) {
+    const want = a.id === target.id;
+    if ((a.isMain === true) !== want) { a.isMain = want; await db.updateAgent(a); }
+  }
+  res.json({ ok: true, main: target.id });
+});
+
 api.put('/agents/:id', async (req, res) => {
   const a = (await db.listAgents()).find(x => x.id === req.params.id && x.ownerId === req.user.id);
   if (!a) return res.status(404).json({ error: 'agent not found' });
   const allowed = ['name','emoji','description','systemPrompt','model','status','platforms','persona','languages','autoLanguage','groupReply','sortOrder','knowledgeEnabled','toolsets'];
+  // isMain is deliberately absent: it is set through /agents/:id/main so only one
+  // agent can hold it.
   for (const k of allowed) if (req.body && k in req.body) a[k] = req.body[k];
   if (req.body && 'waPhoneId' in req.body) {
     const pid = String(req.body.waPhoneId || '').replace(/\D/g, '').slice(0, 24);
@@ -648,6 +662,40 @@ async function runTool(name, args, ctx) {
           channels: Object.entries(a.platforms || {}).filter(([, v]) => v && v.enabled).map(([k]) => k)
         })));
       }
+      case 'update_agent': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const wanted = String((args && args.agent) || '').trim().toLowerCase();
+        const field = String((args && args.field) || '').trim();
+        const raw = String((args && args.value == null ? '' : args.value)).trim();
+        if (!wanted || !field) return 'Ask which agent and what to change, then call this again.';
+        const mine = (await db.listAgents()).filter(a => a.ownerId === ctx.ownerId);
+        const target = mine.find(a => a.name.toLowerCase() === wanted) || mine.find(a => a.name.toLowerCase().includes(wanted));
+        if (!target) return 'No agent matching "' + wanted + '". Call list_agents for the real names.';
+        let patch = null, from = null, to = null;
+        if (field === 'name') {
+          if (raw.length < 2) return 'That name is too short.';
+          patch = { name: raw.slice(0, 60) }; from = target.name; to = raw.slice(0, 60);
+        } else if (field === 'description') {
+          patch = { description: raw.slice(0, 300) }; from = target.description; to = raw.slice(0, 300);
+        } else if (field === 'systemPrompt') {
+          if (raw.length < 20) return 'Those instructions are too short to be useful.';
+          patch = { systemPrompt: raw.slice(0, 4000) }; from = target.systemPrompt; to = raw.slice(0, 4000);
+        } else if (field === 'status') {
+          const v = raw.toLowerCase();
+          if (!['live', 'paused', 'draft'].includes(v)) return 'Status must be live, paused or draft.';
+          patch = { status: v }; from = target.status; to = v;
+        } else if (field === 'telegram' || field === 'whatsapp') {
+          const v = /^(on|true|yes|enable|enabled|live)$/i.test(raw) ? true : /^(off|false|no|disable|disabled|paused)$/i.test(raw) ? false : null;
+          if (v === null) return 'Say on or off for a channel.';
+          const platforms = Object.assign({}, target.platforms || {});
+          platforms[field] = Object.assign({ autoReply: true }, platforms[field] || {}, { enabled: v });
+          patch = { platforms }; from = Boolean(target.platforms && target.platforms[field] && target.platforms[field].enabled); to = v;
+        } else return 'That field cannot be changed from chat.';
+        // Nothing is written here: the owner applies it, so a misheard sentence cannot
+        // rewrite a live agent.
+        ctx.pendingChange = { agentId: target.id, agentName: target.name, field, from, to, patch };
+        return JSON.stringify({ proposed: ctx.pendingChange, note: 'Show the owner what would change and tell them to tap Apply. Nothing is saved until they do.' });
+      }
       case 'draft_agent': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         const text = String((args && args.description) || '').trim();
@@ -740,6 +788,21 @@ const MANAGE_TOOLS = [
       name: 'list_agents',
       description: 'List the agents in this workspace with their status, tools and channels. Use before answering anything about which agents exist.',
       parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_agent',
+      description: 'Propose a change to an existing agent (rename it, rewrite its instructions, set it live or paused, switch a channel on or off). This does not save anything: the owner sees the change as a card and taps Apply. Use the exact agent name.',
+      parameters: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: 'The agent name, as listed' },
+          field: { type: 'string', enum: ['name', 'description', 'systemPrompt', 'status', 'telegram', 'whatsapp'], description: 'What to change' },
+          value: { type: 'string', description: 'The new value. For status: live, paused or draft. For a channel: on or off.' }
+        }
+      }
     }
   },
   {
@@ -925,7 +988,7 @@ api.post('/chat/:id', rateLimitUser(20, 60e3, 'chat'), async (req, res) => {
     }
     // A draft the assistant produced comes back with the reply so the dashboard can
     // show it as a card to edit, instead of asking the owner to retype it.
-    res.json({ ...out, draft: ctx.draft || null });
+    res.json({ ...out, draft: ctx.draft || null, pendingChange: ctx.pendingChange || null });
   } catch (e) {
     suite.logEvent({ ...base, kind: 'error', error: String(e.raw || e.message).slice(0, 400) });
     // A busy model is not an error the user should see as a broken page.
