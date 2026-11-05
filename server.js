@@ -380,14 +380,8 @@ function parseDraft(raw) {
   };
 }
 
-api.post('/agents/draft', async (req, res) => {
-  const text = String((req.body && req.body.description) || '').trim().slice(0, 600);
-  if (text.length < 8) return res.status(400).json({ error: 'Describe what the agent should do, in a sentence or two.' });
-  const day = new Date().toISOString().slice(0, 10);
-  const used = await docs.count('events', { kind: 'agent_draft', day, ownerId: req.user.id }).catch(() => 0);
-  if (!req.user.founder && used >= DRAFT_DAILY_CAP) {
-    return res.status(429).json({ error: 'That is ' + DRAFT_DAILY_CAP + ' drafts today. Edit one of them, or come back tomorrow.' });
-  }
+// One builder for both front doors: the describe box and the agent-management tool.
+async function buildAgentDraft(text) {
   const settings = await db.getSettings();
   const key = (settings.groqApiKey && settings.groqApiKey.startsWith('gsk_')) ? settings.groqApiKey : (process.env.GROQ_API_KEY || '');
   const brief = [
@@ -400,15 +394,28 @@ api.post('/agents/draft', async (req, res) => {
     'shop = products, orders and complaints; profile = remembering a returning customer; studio = short film and video work.',
     'Include a toolset only when the agent genuinely needs it, otherwise []. Set needsKnowledge true only when answering well requires documents the agent cannot reason about alone.'
   ].join(' ');
-  let draft = null;
   try {
     const out = await providers.chat({
       key, model: 'openai/gpt-oss-120b', tools: null, maxTokens: 700, temperature: 0.4,
       messages: [{ role: 'system', content: brief }, { role: 'user', content: text }]
     });
-    if (out.ok) draft = parseDraft(out.text);
-  } catch (e) { /* the fallback draft below still gives them something editable */ }
-  if (!draft) draft = draftFallback(text);
+    if (out.ok) {
+      const parsed = parseDraft(out.text);
+      if (parsed) return parsed;
+    }
+  } catch (e) { /* the fallback below still gives them something editable */ }
+  return draftFallback(text);
+}
+
+api.post('/agents/draft', async (req, res) => {
+  const text = String((req.body && req.body.description) || '').trim().slice(0, 600);
+  if (text.length < 8) return res.status(400).json({ error: 'Describe what the agent should do, in a sentence or two.' });
+  const day = new Date().toISOString().slice(0, 10);
+  const used = await docs.count('events', { kind: 'agent_draft', day, ownerId: req.user.id }).catch(() => 0);
+  if (!req.user.founder && used >= DRAFT_DAILY_CAP) {
+    return res.status(429).json({ error: 'That is ' + DRAFT_DAILY_CAP + ' drafts today. Edit one of them, or come back tomorrow.' });
+  }
+  const draft = await buildAgentDraft(text);
   try {
     await suite.logEvent({ ownerId: req.user.id, channel: 'web', kind: 'agent_draft', agentName: draft.name });
   } catch (e) { /* the cap is a courtesy, not a wall */ }
@@ -435,7 +442,11 @@ api.post('/agents', async (req, res) => {
     groupReply: groupReply === 'always' ? 'always' : 'mention',
     sortOrder: mine.length,
     knowledgeEnabled: req.body && req.body.knowledgeEnabled === false ? false : true,
-    toolsets: Array.isArray(req.body && req.body.toolsets) ? req.body.toolsets.filter(k => DRAFT_TOOLSETS.includes(k)).slice(0, 5) : [],
+    // A founder may hand an agent the management toolset; nobody else can, and it
+    // still only works when a founder is the one talking to it.
+    toolsets: Array.isArray(req.body && req.body.toolsets)
+      ? req.body.toolsets.filter(k => (req.user.founder ? DRAFT_TOOLSETS.concat('manage') : DRAFT_TOOLSETS).includes(k)).slice(0, 6)
+      : [],
     source: req.body && req.body.source === 'builder' ? 'builder' : 'user',
     status: 'draft', createdAt: new Date().toISOString(), messagesHandled: 0, ownerId: req.user.id
   };
@@ -626,6 +637,25 @@ const PROFILE_TOOLS = [
 async function runTool(name, args, ctx) {
   try {
     switch (name) {
+      case 'list_agents': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const mine = (await db.listAgents()).filter(a => a.ownerId === ctx.ownerId);
+        if (!mine.length) return 'There are no agents in this workspace yet.';
+        return JSON.stringify(mine.map(a => ({
+          name: a.name,
+          status: a.status,
+          tools: Array.isArray(a.toolsets) ? a.toolsets : inferToolsets(a),
+          channels: Object.entries(a.platforms || {}).filter(([, v]) => v && v.enabled).map(([k]) => k)
+        })));
+      }
+      case 'draft_agent': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const text = String((args && args.description) || '').trim();
+        if (text.length < 8) return 'Ask the owner what the agent should do, in a sentence or two, then call this again.';
+        const draft = await buildAgentDraft(text.slice(0, 600));
+        ctx.draft = draft; // so the dashboard can offer it as a card
+        return JSON.stringify(draft);
+      }
       case 'generate_image': {
         if (!(await toolQuota(ctx, 'image', 3))) return 'This chat has reached its daily limit of 3 images. Tell the user to try again tomorrow, or offer a text description instead.';
         const raw = await studioCall('/v1/image/generate', { prompt: args.prompt, width: args.width, height: args.height });
@@ -703,7 +733,29 @@ const SHOP_TOOLS = ALHAQQ_OPS_API_KEY ? [
 // Every agent used to carry every tool, so a single reply spent a couple of
 // thousand tokens on schemas it would never call. Groq counts that against the
 // per-minute budget, which is why two answers in a minute could trip the limit.
-const TOOLSETS = { ilm: TOOLS, shop: SHOP_TOOLS, profile: PROFILE_TOOLS, studio: STUDIO_TOOLS, turath: TURATH_TOOLS };
+const MANAGE_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'list_agents',
+      description: 'List the agents in this workspace with their status, tools and channels. Use before answering anything about which agents exist.',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'draft_agent',
+      description: 'Turn a description of an assistant into an editable draft (name, role, instructions, tools, sample questions). Show the draft to the owner; nothing is created until they tap Create in the dashboard.',
+      parameters: {
+        type: 'object',
+        properties: { description: { type: 'string', description: 'What the agent should do, in the owner\'s own words' } }
+      }
+    }
+  }
+];
+
+const TOOLSETS = { ilm: TOOLS, shop: SHOP_TOOLS, profile: PROFILE_TOOLS, studio: STUDIO_TOOLS, turath: TURATH_TOOLS, manage: MANAGE_TOOLS };
 
 function inferToolsets(agent) {
   // Name and description only: a helpdesk prompt names every feature, so reading
@@ -718,8 +770,18 @@ function inferToolsets(agent) {
   return keys;
 }
 
-function toolsFor(agent) {
+function toolsFor(agent, ctx) {
   const keys = Array.isArray(agent.toolsets) && agent.toolsets.length ? agent.toolsets : inferToolsets(agent);
+  // Tools that change the workspace are never inferred and never handed to a
+  // channel: a customer messaging Shop Support must not be able to edit agents.
+  if (!(ctx && ctx.canManage) || !keys.includes('manage')) {
+    const withoutManage = keys.filter((k) => k !== 'manage');
+    return collectTools(withoutManage);
+  }
+  return collectTools(keys);
+}
+
+function collectTools(keys) {
   const out = [];
   for (const k of keys) {
     for (const t of (TOOLSETS[k] || [])) {
@@ -747,7 +809,7 @@ async function groqAsk(agent, history, ctx) {
   } catch (e) { console.log('[prompt extras]', String(e).slice(0, 120)); }
   const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') }, ...history];
   const ilmKey = await getIlmKey();
-  const allTools = toolsFor(agent);
+  const allTools = toolsFor(agent, ctx);
   // A greeting cannot need a lookup, and the schemas cost tokens on every round.
   const lastSaid = String((history[history.length - 1] || {}).content || '').trim();
   const smallTalk = lastSaid.length < 30 && /^(hi|hey|hello|yo|salam|salaam|assalam[ou]?\s*alaikum|good (morning|afternoon|evening)|thanks|thank you|ok|okay|test)\b/i.test(lastSaid);
@@ -855,12 +917,15 @@ api.post('/chat/:id', rateLimitUser(20, 60e3, 'chat'), async (req, res) => {
   }
   suite.logEvent({ ...base, kind: 'message', query: lastUser ? String(lastUser.content || '').slice(0, 300) : '' });
   try {
-    const out = await groqAsk(a, history, { channel: 'web', chatId: req.user.id });
+    const ctx = { channel: 'web', chatId: req.user.id, ownerId: req.user.id, canManage: Boolean(req.user.founder) };
+    const out = await groqAsk(a, history, ctx);
     if (!out.demo) {
       bumpMessages(a.id);
       suite.logEvent({ ...base, kind: 'reply', latency: Date.now() - started, query: lastUser ? String(lastUser.content || '').slice(0, 300) : '' });
     }
-    res.json(out);
+    // A draft the assistant produced comes back with the reply so the dashboard can
+    // show it as a card to edit, instead of asking the owner to retype it.
+    res.json({ ...out, draft: ctx.draft || null });
   } catch (e) {
     suite.logEvent({ ...base, kind: 'error', error: String(e.raw || e.message).slice(0, 400) });
     // A busy model is not an error the user should see as a broken page.

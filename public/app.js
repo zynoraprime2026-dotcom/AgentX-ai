@@ -778,6 +778,10 @@ async function sendChat() {
     const d = await api('/chat/' + chatAgent.id, { method: 'POST', body: { history } });
     thinking.textContent = d.reply;
     thinking.classList.remove('muted');
+    if (d.draft) {
+      renderDraft(d.draft, null);
+      thinking.insertAdjacentHTML('beforeend', '<div class="muted" style="font-size:12px;margin-top:6px">Draft ready on the 🤖 Agents page: review it there and tap Create.</div>');
+    }
     const speak = document.createElement('button');
     speak.className = 'icon-btn speak';
     speak.title = 'Read this answer aloud';
