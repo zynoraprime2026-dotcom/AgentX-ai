@@ -883,6 +883,12 @@ async function groqAsk(agent, history, ctx) {
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
   const FALLBACK_REPLY = 'I could not pull a clear answer together for that one. Try asking it a different way, or narrower.';
   const MAX_ROUNDS = 6;
+  // Waiting out a per-minute budget is worth a few seconds; waiting it out for
+  // fifteen is what makes a slow answer feel broken. A daily budget never clears
+  // inside a reply, so it stops immediately.
+  const WAIT_BUDGET_MS = 12000;
+  const OUT_OF_DAY = /tokens per day|\bTPD\b|daily limit|per day/i;
+  let dailyBudgetOut = false;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const lastRound = round === MAX_ROUNDS - 1;
     let out = null, waited = 0;
@@ -909,8 +915,9 @@ async function groqAsk(agent, history, ctx) {
         } catch (e) { /* diagnostics must never break a reply */ }
       }
       if (out.ok) break;
-      if ((out.status === 429 || out.status === 503) && waited < 45000) {
-        const w = Math.min(Number(out.wait) || 8000, 45000);
+      if ((OUT_OF_DAY.test(em) || /tokens_per_day/i.test(String(out.error || '')))) dailyBudgetOut = true;
+      if ((out.status === 429 || out.status === 503) && !dailyBudgetOut && waited < WAIT_BUDGET_MS) {
+        const w = Math.min(Number(out.wait) || 6000, WAIT_BUDGET_MS - waited);
         waited += w;
         console.log('[provider ' + out.status + '] waiting ' + w + 'ms: ' + em.slice(0, 120));
         await sleep(w);
@@ -924,6 +931,12 @@ async function groqAsk(agent, history, ctx) {
       break;
     }
     if (!out.ok) {
+      if (dailyBudgetOut) {
+        const done = new Error('I have used up today\'s model budget. Answers come back after midnight; everything already saved in the dashboard still works.');
+        done.friendly = true;
+        done.raw = String(out && out.error || 'daily budget');
+        throw done;
+      }
       if (out.status === 429) {
         const busy = new Error('I am at my limit for this minute. Give me a moment and ask again.');
         busy.friendly = true;
