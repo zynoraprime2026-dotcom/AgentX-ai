@@ -873,6 +873,39 @@ api.post('/chat/:id', rateLimitUser(20, 60e3, 'chat'), async (req, res) => {
 let tgUsername = '';
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || '';
+function tgSecretToken() {
+  if (!TG_SECRET) return '';
+  return /^[A-Za-z0-9_-]{1,256}$/.test(TG_SECRET)
+    ? TG_SECRET
+    : crypto.createHash('sha256').update(TG_SECRET).digest('hex').slice(0, 40);
+}
+let tgWebhook = { url: null, lastError: null, checkedAt: null };
+
+// Nothing ever registered the webhook, so a bot that was set up in BotFather and
+// given a token still received nothing: Telegram has to be told where to deliver.
+// Registering on boot means a deploy, a restart or a new bot fixes itself.
+async function registerTelegramWebhook() {
+  if (!TG_TOKEN) return;
+  const base = String(process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || process.env.APP_URL || '').trim().replace(/\/$/, '');
+  if (!/^https:\/\//.test(base)) return;
+  const url = base + '/webhook/telegram';
+  try {
+    const info = await (await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/getWebhookInfo', { signal: AbortSignal.timeout(15000) })).json();
+    const current = (info && info.result) || {};
+    tgWebhook = { url: current.url || null, lastError: current.last_error_message || null, checkedAt: new Date().toISOString() };
+    if (current.url !== url) {
+      const body = { url, allowed_updates: ['message', 'edited_message'] };
+      if (tgSecretToken()) body.secret_token = tgSecretToken();
+      const d = await (await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/setWebhook', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
+      })).json();
+      console.log('[tg] webhook ' + (d.ok ? 'registered at ' + url : 'failed: ' + JSON.stringify(d).slice(0, 160)));
+      tgWebhook.url = d.ok ? url : (current.url || null);
+    }
+  } catch (e) { console.log('[tg webhook]', String(e.message || e).slice(0, 140)); }
+}
+registerTelegramWebhook();
 // The handle in the help text was typed by hand and drifted from the real bot;
 // read it once at boot instead of trusting the copy.
 (async () => {
@@ -1033,7 +1066,8 @@ async function handleTgMessage(msg) {
 }
 
 app.post('/webhook/telegram', (req, res) => {
-  if (TG_SECRET && !safeEq(req.get('x-telegram-bot-api-secret-token') || '', TG_SECRET)) return res.status(401).end();
+  const expected = tgSecretToken();
+  if (expected && !safeEq(req.get('x-telegram-bot-api-secret-token') || '', expected)) return res.status(401).end();
   const upd = req.body || {};
   const msg = upd.message || upd.edited_message;
   if (upd.update_id != null && !firstDelivery('tg', String(upd.update_id))) return res.json({ ok: true, duplicate: true });
@@ -1048,6 +1082,7 @@ app.post('/webhook/telegram', (req, res) => {
 api.get('/telegram/status', (req, res) => res.json({
   tokenConfigured: Boolean(TG_TOKEN),
   bot: tgUsername || null,
+  webhook: tgWebhook,
   selectionEnabled: tgSelected.size > 0
 }));
 
