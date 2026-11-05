@@ -280,6 +280,7 @@ api.get('/status', async (req, res) => {
     ok: true,
     groqConfigured: cfg,
     telegramConnected: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+    telegramBot: tgUsername || null,
     whatsappConnected: Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN),
     ilmConnected: Boolean(process.env.ILM_API_KEY || ((await db.getSettings()).ilmApiKey || '')),
     studioConnected: Boolean(process.env.STUDIO_API_KEY),
@@ -869,8 +870,19 @@ api.post('/chat/:id', rateLimitUser(20, 60e3, 'chat'), async (req, res) => {
 });
 
 // ---------- Telegram webhook ----------
+let tgUsername = '';
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || '';
+// The handle in the help text was typed by hand and drifted from the real bot;
+// read it once at boot instead of trusting the copy.
+(async () => {
+  if (!TG_TOKEN) return;
+  try {
+    const r = await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/getMe', { signal: AbortSignal.timeout(10000) });
+    const d = await r.json();
+    if (d && d.ok && d.result && d.result.username) tgUsername = '@' + d.result.username;
+  } catch (e) { /* the fallback below is still readable */ }
+})();
 const tgSelected = new Map();   // chatId -> agent id chosen via /agent (transient)
 const tgHist = (chatId) => db.getHistory('telegram', chatId);
 
@@ -1035,6 +1047,7 @@ app.post('/webhook/telegram', (req, res) => {
 
 api.get('/telegram/status', (req, res) => res.json({
   tokenConfigured: Boolean(TG_TOKEN),
+  bot: tgUsername || null,
   selectionEnabled: tgSelected.size > 0
 }));
 
@@ -1423,7 +1436,7 @@ WHAT AGENTX IS AND WHAT WE OFFER (answer from these facts):
 3. Each agent has a name, emoji, description, system prompt, and a choice of models: GPT-OSS 120B (most capable), GPT-OSS 20B (fast), Qwen 3.8 27B, or Allam 2 7B (Arabic-strong). Models run on Groq.
 4. Per-agent channel controls: toggle WhatsApp and Telegram separately for each agent, and set status to Draft, Live or Paused.
 5. Agents can use live Islamic-knowledge tools from the Ilm API: prayer times by city, Quran ayah with translations, hadith search, Arabic dictionary and root search, duas, and comparative fiqh rulings.
-6. Free daily Fajr prayer-time broadcast on Telegram: send /subscribe <city> to @AgentXtechbot.
+6. Free daily Fajr prayer-time broadcast on Telegram: send /subscribe <city> to ${tgUsername || 'this bot'}.
 7. The platform is owned and maintained by Zynora AI; agents currently serving users include the Madrasa Assistant (madrasa lessons, timetables, admissions for Al-Haqq Digital madrasa in Tarkwa) and Shop Support (customer help for the shop).
 
 RULES:
