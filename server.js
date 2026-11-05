@@ -889,9 +889,12 @@ async function groqAsk(agent, history, ctx) {
   const WAIT_BUDGET_MS = 12000;
   const OUT_OF_DAY = /tokens per day|\bTPD\b|daily limit|per day/i;
   let dailyBudgetOut = false;
+  // One budget for the whole reply: a per-round allowance still let a tool round pay
+  // a fresh 12s, which is how a single answer reached twenty seconds.
+  let waited = 0;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const lastRound = round === MAX_ROUNDS - 1;
-    let out = null, waited = 0;
+    let out = null;
     for (let attempt = 0; attempt < 4; attempt++) {
       out = await providers.chat({
         key,
