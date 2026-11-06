@@ -630,7 +630,24 @@ const TOOLS = [
   { type: 'function', function: {
       name: 'get_fiqh_ruling',
       description: 'Comparative fiqh ruling across the four madhabs.',
-      parameters: { type: 'object', properties: { topic: { type: 'string' } }, required: ['topic'] } } }
+      parameters: { type: 'object', properties: { topic: { type: 'string' } }, required: ['topic'] } } },
+  { type: 'function', function: {
+      name: 'search_islamic_sources',
+      description: 'Search Quran, hadith, duas and fiqh in one call. Use this first for an open question like "what does Islam say about mercy": it returns labelled sections with stable reference links.',
+      parameters: { type: 'object', properties: {
+        query: { type: 'string', description: 'What to look for' },
+        only: { type: 'string', description: 'Optional comma list to narrow: quran,hadith,duas,fiqh' }
+      }, required: ['query'] } } },
+  { type: 'function', function: {
+      name: 'cite_reference',
+      description: 'Turn an ayah or hadith into a canonical citation: exact reference, Arabic text, translation and a link. ALWAYS call this before quoting a reference, and never state a reference a tool did not return.',
+      parameters: { type: 'object', properties: {
+        type: { type: 'string', enum: ['ayah', 'hadith'], description: 'What you are citing' },
+        surah: { type: 'integer', description: 'Surah number (ayah citations)' },
+        ayah: { type: 'integer', description: 'Ayah number (ayah citations)' },
+        collection: { type: 'string', description: 'Collection slug, e.g. bukhari (hadith citations)' },
+        number: { type: 'integer', description: 'Hadith number (hadith citations)' }
+      }, required: ['type'] } } }
 ];
 
 const PROFILE_TOOLS = [
@@ -752,6 +769,43 @@ async function runTool(name, args, ctx) {
           : await ilmCall('/v1/dictionary/search', { q: args.query });
       case 'get_dua': return args.search ? await ilmCall('/v1/duas/search', { q: args.search }) : await ilmCall('/v1/duas/random');
       case 'get_fiqh_ruling': return await ilmCall('/v1/fiqh/search', { topic: args.topic });
+      case 'search_islamic_sources': {
+        const d = await ilmCall('/v1/search', { q: args.query, only: args.only, limit: 3 }, { as: 'json' });
+        const sections = d.sections || {};
+        const blocks = [];
+        for (const [name, sec] of Object.entries(sections)) {
+          const rows = (sec && sec.results) || [];
+          if (!rows.length) continue;
+          const lines = rows.map(r => {
+            const body = r.translation || r.text_english || r.text_arabic || r.ruling || '';
+            return '- ' + (r.reference || r.title || r.topic || 'match') + ': ' + String(body).replace(/\s+/g, ' ').slice(0, 220);
+          });
+          blocks.push(name.toUpperCase() + '\n' + lines.join('\n'));
+        }
+        if (!blocks.length) return 'Nothing found for "' + args.query + '" in Quran, hadith, duas or fiqh. Say so and suggest a different wording.';
+        return 'Results for "' + args.query + '":\n\n' + blocks.join('\n\n')
+          + '\n\nThese are the only references you may quote from this search. Call cite_reference with a result to get its exact wording and link.';
+      }
+      case 'cite_reference': {
+        const params = args.type === 'hadith' || args.collection
+          ? { type: 'hadith', collection: args.collection, number: args.number }
+          : { type: 'ayah', surah: args.surah, ayah: args.ayah };
+        let d;
+        try {
+          d = await ilmCall('/v1/cite', params, { as: 'json' });
+        } catch (e) {
+          return 'That reference could not be verified (' + String(e.message).slice(0, 120) + '). Do not quote it; tell the user you could not confirm it.';
+        }
+        const parts = ['VERIFIED REFERENCE: ' + d.reference];
+        parts.push('Citation: ' + d.citation);
+        if (d.text_arabic) parts.push('ARABIC:\n' + d.text_arabic);
+        const english = d.text_english || (d.translation && d.translation.text);
+        if (english) parts.push('ENGLISH:\n' + english);
+        if (d.grade) parts.push('Grade: ' + d.grade);
+        if (d.url) parts.push('Link: ' + d.url);
+        parts.push('Quote this wording exactly. Lead with Arabic when the user writes Arabic, English when they write English.');
+        return parts.join('\n\n');
+      }
       case 'get_customer_profile': {
         if (!ctx) return 'No chat context available.';
         const p = await db.getProfile(ctx.channel, ctx.chatId);
@@ -891,9 +945,14 @@ async function groqAsk(agent, history, ctx) {
       isGroup: Boolean(ctx && ctx.isGroup)
     });
   } catch (e) { console.log('[prompt extras]', String(e).slice(0, 120)); }
-  const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') }, ...history];
-  const ilmKey = await getIlmKey();
   const allTools = toolsFor(agent, ctx);
+  // Reference discipline is appended, not baked into each agent's prompt: it only
+  // matters where the Ilm tools are present, and it is the rule that stops an agent
+  // citing a hadith number that no tool ever returned.
+  const hasIlmTools = allTools.some(t => t && t.function && ['search_hadith', 'get_quran_ayah', 'search_islamic_sources', 'cite_reference'].includes(t.function.name));
+  const REFERENCE_RULE = '\n\nCITATION DISCIPLINE: when you quote the Quran or a hadith, use only wording returned by a tool in this conversation. Call cite_reference before you give any surah:ayah or collection/number, and never state a reference a tool did not return. If no tool confirmed it, say you cannot confirm the exact reference and offer to look it up.';
+  const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') + (hasIlmTools ? REFERENCE_RULE : '') }, ...history];
+  const ilmKey = await getIlmKey();
   // A greeting cannot need a lookup, and the schemas cost tokens on every round.
   const lastSaid = String((history[history.length - 1] || {}).content || '').trim();
   const smallTalk = lastSaid.length < 30 && /^(hi|hey|hello|yo|salam|salaam|assalam[ou]?\s*alaikum|good (morning|afternoon|evening)|thanks|thank you|ok|okay|test)\b/i.test(lastSaid);
