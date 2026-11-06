@@ -1443,7 +1443,14 @@ async function handleWa(req) {
     const islamicPick = ISLAMIC.test(text)
       ? (ilmAgents.find(a => a.id === 'agx_mad01') || ilmAgents[0])
       : null;
-    agent = shared.find(a => a.id === waChoice.get(from)) || islamicPick || shared.find(a => a.id === 'agx_web01') || shared[0];
+    // A bare greeting used to fall through to the AgentX helpdesk, so "Salam" was
+    // answered with a product pitch. On a sharing number, a greeting belongs to the
+    // madrasa: it is the agent people reach for first.
+    const GREETING = /^(?:as[- ]?sala+m[ou]?[- ]?(?:alaykum|alaikum|alaikum warahmatullah)?|sala+m(?: alaykum)?|hello|hi|hey|good (?:morning|afternoon|evening)|marhaba|ahlan)[\s!.،,?]*$/iu;
+    const greetingPick = !islamicPick && GREETING.test(String(text).trim())
+      ? (ilmAgents.find(a => a.id === 'agx_mad01') || ilmAgents[0])
+      : null;
+    agent = shared.find(a => a.id === waChoice.get(from)) || islamicPick || greetingPick || shared.find(a => a.id === 'agx_web01') || shared[0];
   }
   if (!agent) return;
   const isGroup = Boolean(msg.group_id || /@g\.us$/i.test(String(msg.group_id || '')) || /@g\.us$/i.test(String(from)));
