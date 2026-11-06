@@ -737,9 +737,14 @@ function planImage(brief, width, height) {
   if (has('poster', 'flyer', 'banner', 'invitation', 'invite', 'announcement', 'memo', 'notice')) { kind = 'poster'; w = 1024; h = 1536; }
   else if (has('thumbnail', 'cover', 'youtube', 'hero', 'landscape', 'wide', 'wallpaper')) { kind = 'landscape'; w = 1536; h = 1024; }
   else if (has('story', 'reel', 'vertical', 'tiktok', 'phone wallpaper')) { kind = 'portrait'; w = 1024; h = 1536; }
+  // The model habitually passes 1024x1024 by default, which threw away the frame chosen
+  // for the intended use, so a bare square is treated as "no preference".
   const pw = parseInt(width, 10); const ph = parseInt(height, 10);
-  if (pw) w = Math.min(Math.max(pw, 256), 1920);
-  if (ph) h = Math.min(Math.max(ph, 256), 1920);
+  const explicit = pw && ph && !(pw === 1024 && ph === 1024);
+  if (explicit) {
+    w = Math.min(Math.max(pw, 256), 1920);
+    h = Math.min(Math.max(ph, 256), 1920);
+  }
   let style;
   if (has('logo', 'icon', 'badge', 'emblem', 'monogram')) style = 'clean vector mark, flat colours, crisp edges, centred on a plain background, no lettering';
   else if (has('photo', 'photograph', 'realistic', 'portrait of', 'sunset', 'landscape of', 'market', 'mosque')) style = 'professional photography, soft natural light, shallow depth of field, sharp focus on the subject';
