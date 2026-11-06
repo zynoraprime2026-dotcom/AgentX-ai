@@ -4,6 +4,24 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AgentX — AI Agent Dashboard</title>
+<meta name="description" content="AgentX builds, runs and monitors AI agents across WhatsApp, Telegram and the web. Ilm, Turath and Studio tools included. By Zynora AI, Tarkwa.">
+<meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f8fc" media="(prefers-color-scheme: light)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AgentX">
+<meta property="og:title" content="AgentX — AI agent dashboard">
+<meta property="og:description" content="Build, run and monitor AI agents across WhatsApp, Telegram and the web.">
+<meta property="og:url" content="https://agentx-byai.onrender.com">
+<meta property="og:image" content="https://agentx-byai.onrender.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="AgentX — AI agent dashboard">
+<meta name="twitter:description" content="Build, run and monitor AI agents across WhatsApp, Telegram and the web.">
+<meta name="twitter:image" content="https://agentx-byai.onrender.com/og.png">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="og.png">
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,6 +32,7 @@
       <button class="navbtn active" data-view="overview" title="Your agents at a glance">📊 Overview</button>
       <button class="navbtn" data-view="agents" title="Create, arrange and tune your agents">🤖 Agents</button>
       <button class="navbtn" data-view="analytics" title="Messages, latency and top questions">📈 Analytics</button>
+      <button class="navbtn" data-view="conversations" title="Read what people actually asked">💬 Conversations</button>
       <button class="navbtn" data-view="reminders" title="Scheduled messages your agents push">⏰ Reminders</button>
       <button class="navbtn" data-view="triggers" title="Watch an external feed and message when it changes">🔔 Triggers</button>
       <button class="navbtn" data-view="channels" title="WhatsApp and Telegram connections">📡 Channels</button>
@@ -40,7 +59,22 @@
       <div id="overviewAgents" class="agent-grid"></div>
     </section>
 
-    <!-- AGENTS -->
+    <!-- CONVERSATIONS -->
+<section id="view-conversations" class="view hidden">
+  <div class="row-between">
+    <h1>Conversations</h1>
+    <div class="conv-tools">
+      <input id="convSearch" class="input" placeholder="Search a number or message" autocomplete="off">
+      <button class="btn small" id="convRefresh">Refresh</button>
+    </div>
+  </div>
+  <div class="conv-layout">
+    <div class="conv-list" id="convList"></div>
+    <div class="conv-thread" id="convThread"></div>
+  </div>
+</section>
+
+<!-- AGENTS -->
     <section id="view-agents" class="view hidden">
       <div class="row-between">
         <h1>Agents</h1>
@@ -190,6 +224,10 @@
       <h2>Messages per day</h2>
       <div class="chart" id="analyticsChart"></div>
       <div class="split" style="margin-top:22px">
+        <div class="card inner">
+          <h3>Tools used</h3>
+          <div id="analyticsTools" class="table-wrap"></div>
+        </div>
         <div class="card inner">
           <h3>By agent</h3>
           <div id="analyticsAgents" class="table-wrap"></div>

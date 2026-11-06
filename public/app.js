@@ -86,6 +86,7 @@ $('#logoutBtn').onclick = async () => {
 // ---------- navigation ----------
 const views = {
   overview: renderOverview, agents: renderAgents, analytics: renderAnalytics,
+  conversations: renderConversations,
   reminders: loadReminders, triggers: loadTriggers, channels: () => renderHealth(),
   billing: loadBilling, settings: loadHealth
 };
@@ -592,6 +593,89 @@ function renderChannels() {
   });
 }
 
+// ---------- conversations ----------
+// WhatsApp chat ids look like "<phone_number_id>:<user>" on the shared number.
+function prettyChat(id) {
+  const s = String(id || '');
+  if (s.includes(':')) {
+    const [, user] = s.split(':');
+    return user;
+  }
+  return s;
+}
+
+// A card that holds its shape while the first paint is still fetching, so a slow
+// free-tier cold start reads as "loading" instead of "broken".
+function skeletonRows(n = 5) {
+  return Array.from({ length: n }, () => '<div class="skeleton-row"><span class="skeleton w60"></span><span class="skeleton w35"></span></div>').join('');
+}
+
+let convCurrent = null;
+
+async function renderConversations() {
+  const list = $('#convList'), thread = $('#convThread');
+  list.innerHTML = skeletonRows(5);
+  thread.innerHTML = '<p class="muted">Pick a conversation to read it.</p>';
+  let threads = [];
+  try {
+    threads = (await api('/conversations')).threads || [];
+  } catch (e) {
+    list.innerHTML = `<p class="muted">${esc(e.message)}</p>`;
+    return;
+  }
+  const q = ($('#convSearch').value || '').trim().toLowerCase();
+  const shown = threads.filter((t) => !q
+    || String(t.chat_id).toLowerCase().includes(q)
+    || String(t.last_text || '').toLowerCase().includes(q));
+  if (!shown.length) {
+    list.innerHTML = `<p class="muted">${threads.length ? 'Nothing matches that search.' : 'No conversations recorded yet.'}</p>`;
+    return;
+  }
+  list.innerHTML = shown.map((t) => `
+    <button class="conv-item${convCurrent && convCurrent.channel === t.channel && convCurrent.chat === t.chat_id ? ' active' : ''}"
+      data-channel="${esc(t.channel)}" data-chat="${esc(t.chat_id)}">
+      <span class="conv-who">${esc(prettyChat(t.chat_id))}</span>
+      <span class="conv-meta">${esc(t.channel)} · ${t.messages} message${t.messages === 1 ? '' : 's'}</span>
+      <span class="conv-preview">${esc(String(t.last_text || '').replace(/\s+/g, ' ').slice(0, 90))}</span>
+    </button>`).join('');
+  $$('.conv-item').forEach((b) => { b.onclick = () => openThread(b.dataset.channel, b.dataset.chat); });
+  const first = convCurrent && shown.find((t) => t.channel === convCurrent.channel && t.chat_id === convCurrent.chat);
+  const target = first || shown[0];
+  openThread(target.channel, target.chat_id);
+}
+
+async function openThread(channel, chat) {
+  convCurrent = { channel, chat };
+  $$('.conv-item').forEach((b) => b.classList.toggle('active', b.dataset.channel === channel && b.dataset.chat === chat));
+  const thread = $('#convThread');
+  thread.innerHTML = skeletonRows(4);
+  try {
+    const d = await api('/conversations/thread?channel=' + encodeURIComponent(channel) + '&chat=' + encodeURIComponent(chat));
+    const msgs = d.messages || [];
+    thread.innerHTML = `
+      <div class="thread-head">
+        <b>${esc(prettyChat(chat))}</b>
+        <span class="muted">${esc(channel)} · ${msgs.length} messages</span>
+      </div>
+      <div class="thread-body">
+        ${msgs.length ? msgs.map((m) => `
+          <div class="bubble ${m.role === 'assistant' ? 'bot' : 'user'}">
+            <div class="bubble-text">${esc(m.content)}</div>
+            <div class="bubble-role">${m.role === 'assistant' ? 'agent' : 'person'}</div>
+          </div>`).join('') : '<p class="muted">This conversation is empty.</p>'}
+      </div>`;
+    thread.querySelector('.thread-body').scrollTop = 1e6;
+  } catch (e) {
+    thread.innerHTML = `<p class="muted">${esc(e.message)}</p>`;
+  }
+}
+
+$('#convSearch').addEventListener('input', () => {
+  clearTimeout(window._convT);
+  window._convT = setTimeout(renderConversations, 250);
+});
+$('#convRefresh').addEventListener('click', renderConversations);
+
 // ---------- analytics ----------
 async function renderAnalytics() {
   const days = $('#analyticsRange').value || 14;
@@ -615,6 +699,12 @@ async function renderAnalytics() {
     el.agents.innerHTML = s.agents.length ? `<table class="table"><thead><tr><th>Agent</th><th>Msgs</th><th>Replies</th><th>Avg</th><th>Errors</th></tr></thead><tbody>
       ${s.agents.map(a => `<tr><td>${esc(a.name)}</td><td>${a.messages}</td><td>${a.replies}</td><td>${a.avgLatency ? a.avgLatency + 'ms' : '—'}</td><td>${a.errors || ''}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No traffic yet in this window.</p>';
+    api('/usage/tools?days=' + days).then((u) => {
+      const tools = (u.tools || []);
+      $('#analyticsTools').innerHTML = tools.length
+        ? `<table class="table"><tbody>${tools.map((x) => `<tr><td>${esc(x.tool)}</td><td class="right muted">${x.uses}× on ${x.days}d</td></tr>`).join('')}</tbody></table>`
+        : '<p class="muted">No tool calls yet in this window.</p>';
+    }).catch(() => { $('#analyticsTools').innerHTML = '<p class="muted">Tool usage unavailable.</p>'; });
     el.queries.innerHTML = s.topQueries.length ? `<table class="table"><tbody>
       ${s.topQueries.map(q => `<tr><td>${esc(q.query)}</td><td class="right muted">${q.count}×</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">Top questions appear once people start asking.</p>';

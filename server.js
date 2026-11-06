@@ -296,6 +296,26 @@ api.get('/status', async (req, res) => {
   });
 });
 
+// ---------- conversations (dashboard) ----------
+// The dashboard could show every agent and every stat, yet not a single message
+// anyone had actually sent: the history table was only ever read by the bot itself.
+api.get('/conversations', async (req, res) => {
+  const threads = await db.listThreads(req.query.limit);
+  res.json({ threads });
+});
+
+api.get('/conversations/thread', async (req, res) => {
+  const channel = String(req.query.channel || '').trim();
+  const chat = String(req.query.chat || '').trim();
+  if (!channel || !chat) return res.status(400).json({ error: 'channel and chat are required' });
+  const messages = await db.listMessages(channel, chat, req.query.limit);
+  res.json({ channel, chat, messages });
+});
+
+api.get('/usage/tools', async (req, res) => {
+  res.json(await db.toolUsage(req.query.days));
+});
+
 api.get('/settings', async (req, res) => {
   if (!req.user.founder) return res.json({ readOnly: true });
   const st = await db.getSettings();

@@ -351,6 +351,52 @@ const store = {
     }
     return next;
   },
+  // ---------- conversation browsing (dashboard) ----------
+  // agx_hist has no timestamp column, so recency comes from the autoincrement id:
+  // the newest row for a chat is its last activity and the best ordering available.
+  async listThreads(limit) {
+    const n = Math.min(300, Math.max(1, Number(limit) || 120));
+    if (pool) {
+      const r = await pool.query(`
+        WITH t AS (
+          SELECT channel, chat_id, count(*)::int AS messages, max(id) AS last_id
+          FROM agx_hist GROUP BY channel, chat_id
+        )
+        SELECT t.channel, t.chat_id, t.messages, t.last_id, h.role AS last_role, h.content AS last_text
+        FROM t JOIN agx_hist h ON h.id = t.last_id
+        ORDER BY t.last_id DESC LIMIT $1`, [n]);
+      return r.rows;
+    }
+    const all = readJson(path.join(DATA_DIR, 'histories.json'), {});
+    const out = [];
+    for (const channel of Object.keys(all)) {
+      for (const chatId of Object.keys(all[channel] || {})) {
+        const msgs = all[channel][chatId] || [];
+        const last = msgs[msgs.length - 1] || {};
+        out.push({ channel, chat_id: chatId, messages: msgs.length, last_role: last.role || null, last_text: last.content || '' });
+      }
+    }
+    return out.slice(0, n);
+  },
+  async listMessages(channel, chatId, limit) {
+    const n = Math.min(500, Math.max(1, Number(limit) || 120));
+    if (pool) {
+      const r = await pool.query('SELECT id, role, content FROM agx_hist WHERE channel=$1 AND chat_id=$2 ORDER BY id DESC LIMIT $3', [channel, String(chatId), n]);
+      return r.rows.reverse();
+    }
+    const all = readJson(path.join(DATA_DIR, 'histories.json'), {});
+    return ((all[channel] || {})[chatId] || []).slice(-n);
+  },
+  async toolUsage(days) {
+    const span = Math.min(90, Math.max(1, Number(days) || 30));
+    const from = new Date(Date.now() - (span - 1) * 864e5).toISOString().slice(0, 10);
+    if (pool) {
+      const r = await pool.query(
+        'SELECT tool, sum(uses)::int AS uses, count(DISTINCT day)::int AS days FROM agx_tool_uses WHERE day >= $1 GROUP BY tool ORDER BY uses DESC', [from]);
+      return { window: { days: span, from }, tools: r.rows };
+    }
+    return { window: { days: span, from }, tools: [] };
+  },
   async clearHistory(channel, chatId) {
     if (pool) { await pool.query('DELETE FROM agx_hist WHERE channel=$1 AND chat_id=$2', [channel, String(chatId)]); return; }
     const all = readJson(path.join(DATA_DIR, 'histories.json'), {});

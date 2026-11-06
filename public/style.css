@@ -203,3 +203,58 @@ input[type=range] { padding: 0; accent-color: var(--accent); }
 .draft-tools { display: flex; flex-wrap: wrap; gap: 6px; }
 .draft-tools label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; border: 1px solid var(--line, #2a2f3a); border-radius: 999px; padding: 4px 10px; }
 .draft-qs { margin: 0; padding-left: 18px; font-size: 13px; }
+
+/* ---------- conversations ---------- */
+.conv-tools { display: flex; gap: 10px; align-items: center; }
+.input { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 9px 12px; font: inherit; font-size: 14px; }
+.input:focus { outline: none; border-color: var(--accent); }
+.conv-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
+.conv-list { display: flex; flex-direction: column; gap: 6px; max-height: 62vh; overflow-y: auto; padding-right: 4px; }
+.conv-item { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; font: inherit; color: var(--text); display: grid; gap: 2px; }
+.conv-item:hover { border-color: var(--accent); }
+.conv-item.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); background: var(--panel2); }
+.conv-who { font-weight: 600; font-size: 14px; }
+.conv-meta { font-size: 12px; color: var(--muted); }
+.conv-preview { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-thread { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-height: 320px; }
+.thread-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; padding-bottom: 10px; border-bottom: 1px solid var(--line); margin-bottom: 12px; font-size: 14px; flex-wrap: wrap; }
+.thread-body { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; }
+.bubble { max-width: 78%; border-radius: 12px; padding: 8px 12px; font-size: 14px; }
+.bubble.user { align-self: flex-start; background: var(--panel2); border: 1px solid var(--line); }
+.bubble.bot { align-self: flex-end; background: color-mix(in srgb, var(--accent) 18%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.bubble-text { white-space: pre-wrap; word-break: break-word; }
+.bubble-role { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+/* ---------- loading ---------- */
+.skeleton-row { display: grid; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.skeleton { display: block; height: 10px; border-radius: 999px; background: linear-gradient(90deg, var(--panel2) 25%, var(--line) 50%, var(--panel2) 75%); background-size: 200% 100%; animation: shimmer 1.3s ease-in-out infinite; }
+.skeleton.w60 { width: 60%; } .skeleton.w35 { width: 35%; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+
+/* ---------- light theme ---------- */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f8fc; --panel: #ffffff; --panel2: #eef2f9; --line: #d7e0ee;
+    --text: #111a2e; --muted: #5b6b85; --accent: #2563eb; --green: #15803d; --red: #b91c1c; --amber: #b45309;
+  }
+  .bubble.bot { background: #e8efff; border-color: #c7d8fb; }
+}
+
+/* ---------- phones ---------- */
+@media (max-width: 820px) {
+  .shell { flex-direction: column; }
+  .sidebar { width: 100%; height: auto; position: static; border-right: none; border-bottom: 1px solid var(--line); }
+  .brand { padding: 14px 16px; }
+  .sidebar nav { flex-direction: row; overflow-x: auto; padding: 0 10px 10px; gap: 6px; }
+  .navbtn { white-space: nowrap; padding: 8px 12px; font-size: 14px; box-shadow: none !important; }
+  .navbtn.active { border: 1px solid var(--accent); }
+  .sidebar-foot { display: none; }
+  .main { padding: 18px 16px 64px; }
+  .conv-layout { grid-template-columns: 1fr; }
+  .conv-list { max-height: 34vh; }
+  .bubble { max-width: 92%; }
+  .row-between h1 { font-size: 21px; }
+  .conv-tools { width: 100%; }
+  .input { flex: 1; min-width: 0; }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "AgentX — AI agent dashboard",
+  "short_name": "AgentX",
+  "description": "Build, run and monitor AI agents across WhatsApp, Telegram and the web.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "icons": [
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "og.png", "sizes": "1200x630", "type": "image/png" }
+  ]
+}
