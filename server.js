@@ -724,7 +724,23 @@ async function runTool(name, args, ctx) {
       case 'search_historical_events': return await turathCall('/api/events', { q: args.query, year: args.year, per: 5 });
       case 'get_prayer_times': return await ilmCall('/v1/prayer-times', { city: args.city, date: args.date, method: 'MuslimWorldLeague' });
       case 'get_quran_ayah': return await ilmCall(`/v1/quran/${args.surah}/${args.ayah}`, { translation: args.translation });
-      case 'search_hadith': return await ilmCall('/v1/hadith/search', { q: args.query, collection: args.collection, language: args.language, limit: 3, excerpt: 180, fields: 'narrator,collection,hadith_number,grade,text_english,text_arabic' });
+      case 'search_hadith': {
+        // Verbatim English text for a couple of matches, rendered as readable
+        // lines so the model quotes real wording instead of guessing at a
+        // JSON string that used to arrive cut in half.
+        const d = await ilmCall('/v1/hadith/search', {
+          q: args.query, collection: args.collection, language: args.language,
+          limit: 2, fields: 'narrator,collection,hadith_number,book_name,grade,text_english'
+        }, { as: 'json' });
+        const rows = (d.results || []);
+        if (!rows.length) return `No hadith found for "${args.query}". Suggest a different keyword.`;
+        const lines = rows.map(r => {
+          const head = `${r.collection} ${r.hadith_number}${r.book_name ? ' (Book: ' + r.book_name + ')' : ''}${r.narrator ? ' — narrated by ' + r.narrator : ''}`;
+          const grade = r.grade ? `\nGrade: ${r.grade}` : '';
+          return `${head}\n${r.text_english}${grade}`;
+        });
+        return `Hadith matches for "${d.query}" (showing ${lines.length} of ${d.total}).\n\nThe text below is verbatim from the collection: quote it exactly as written and never invent or paraphrase wording.\n\n${lines.join('\n\n---\n\n')}`;
+      }
       case 'search_dictionary':
         return args.mode === 'root'
           ? await ilmCall('/v1/dictionary/root/' + encodeURIComponent(args.query))
