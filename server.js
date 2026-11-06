@@ -902,6 +902,41 @@ const PROFILE_TOOLS = [
 async function runTool(name, args, ctx) {
   try {
     switch (name) {
+      case 'agent_stats': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const days = Math.min(Math.max(Number(args.days) || 7, 1), 120);
+        const sum = await suite.summary(ctx.ownerId, days);
+        const agents = (sum.agents || []).slice(0, 8).map((a) => '  ' + a.name + ': ' + a.messages + ' msgs, ' + a.replies + ' replies, ' + a.errors + ' errors' + (a.avgLatency ? ', avg ' + a.avgLatency + 'ms' : ''));
+        const channels = (sum.channels || []).slice(0, 6).map((c) => '  ' + c.channel + ': ' + c.messages + ' msgs');
+        const top = Object.entries(sum.queries || {}).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([q, n]) => '  ' + n + 'x ' + q);
+        return 'Last ' + days + ' days (' + sum.window.from + ' to ' + sum.window.to + ')\n'
+          + 'messages ' + sum.totals.messages + ' | replies ' + sum.totals.replies + ' | errors ' + sum.totals.errors
+          + ' | avg latency ' + (sum.totals.avgLatencyMs || 'n/a') + 'ms | reply rate ' + sum.totals.replyRate + '%\n\n'
+          + 'By agent:\n' + (agents.join('\n') || '  (none)')
+          + '\n\nBy channel:\n' + (channels.join('\n') || '  (none)')
+          + (top.length ? '\n\nMost asked:\n' + top.join('\n') : '');
+      }
+      case 'list_triggers': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const all = await docs.list('triggers', { ownerId: ctx.ownerId });
+        if (!all.length) return 'There are no triggers in this workspace.';
+        return all.map((t) => '  ' + t.name + ' | ' + (t.active === false ? 'paused' : 'active') + ' | every ' + (t.intervalMin || '?') + 'min | runs ' + (t.runs || 0)
+          + (t.lastValue != null ? ' | last value ' + JSON.stringify(t.lastValue).slice(0, 40) : '')
+          + (t.lastError ? ' | last error: ' + String(t.lastError).slice(0, 80) : '')).join('\n');
+      }
+      case 'set_trigger': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const wanted = String(args.name || '').trim().toLowerCase();
+        const action = String(args.action || '').trim().toLowerCase();
+        if (!wanted || !['pause', 'resume'].includes(action)) return 'Say which trigger and whether to pause or resume it.';
+        const all = await docs.list('triggers', { ownerId: ctx.ownerId });
+        const t = all.find((x) => String(x.name || '').toLowerCase() === wanted)
+          || all.find((x) => String(x.name || '').toLowerCase().includes(wanted));
+        if (!t) return 'No trigger named "' + wanted + '". Call list_triggers for the real names.';
+        if ((t.active !== false) === (action === 'resume')) return '"' + t.name + '" is already ' + action + 'd.';
+        await docs.put('triggers', { ...t, active: action === 'resume' });
+        return '"' + t.name + '" is now ' + (action === 'resume' ? 'active' : 'paused') + '.';
+      }
       case 'github_list': case 'github_file': case 'github_search_code':
       case 'github_commits': case 'render_deploy_status': case 'render_logs': {
         // Repository and production-log access is owner-only and dashboard-only: a
@@ -1150,7 +1185,19 @@ const MANAGE_TOOLS = [
         properties: { description: { type: 'string', description: 'What the agent should do, in the owner\'s own words' } }
       }
     }
-  }
+  },
+  { type: 'function', function: {
+      name: 'agent_stats',
+      description: 'Message, reply, error and latency totals for the workspace, plus per-agent and per-channel rows and the most common questions. Use it for "how many chats this week", "which agent is slowest", "any errors today".',
+      parameters: { type: 'object', properties: { days: { type: 'number', description: 'Window in days, 1 to 120. Default 7.' } } } } },
+  { type: 'function', function: {
+      name: 'list_triggers',
+      description: 'List the scheduled triggers with whether each is active, its interval, last value and last error.',
+      parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: {
+      name: 'set_trigger',
+      description: 'Pause or resume a named trigger. Use the exact name from list_triggers.',
+      parameters: { type: 'object', properties: { name: { type: 'string' }, action: { type: 'string', enum: ['pause', 'resume'] } }, required: ['name', 'action'] } } }
 ];
 
 const TOOLSETS = { ilm: TOOLS, shop: SHOP_TOOLS, profile: PROFILE_TOOLS, studio: STUDIO_TOOLS, turath: TURATH_TOOLS, web: WEB_TOOLS, dev: DEV_TOOLS, manage: MANAGE_TOOLS };
