@@ -461,6 +461,40 @@ api.get('/usage/tools', async (req, res) => {
   res.json(await db.toolUsage(req.query.days));
 });
 
+// ---------- exports ----------
+// Downloads are the safe half of file handling: nothing enters the service, the owner
+// gets their own data back in a format they can keep. Uploading code would be remote
+// code execution on the process holding every key, so that stays closed.
+function asDownload(res, name, type, body) {
+  res.setHeader('Content-Type', type);
+  res.setHeader('Content-Disposition', 'attachment; filename="' + name + '"');
+  res.send(body);
+}
+
+api.get('/conversations/thread/export', async (req, res) => {
+  const channel = String(req.query.channel || '').trim();
+  const chat = String(req.query.chat || '').trim();
+  if (!channel || !chat) return res.status(400).json({ error: 'channel and chat are required' });
+  const msgs = await db.listMessages(channel, chat, 500);
+  const out = ['# Conversation with ' + chat, '', '- Channel: ' + channel, '- Messages: ' + msgs.length, '- Exported: ' + new Date().toISOString(), ''];
+  for (const m of msgs.slice().reverse()) {
+    out.push('**' + (m.role === 'assistant' ? 'Agent' : 'Person') + '**', '', String(m.content || '').trim(), '');
+  }
+  asDownload(res, 'agentx-' + channel + '-' + chat.replace(/[^0-9a-z]/gi, '') + '.md', 'text/markdown; charset=utf-8', out.join('\n'));
+});
+
+api.get('/usage/export', async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 120);
+  const sum = await suite.summary(req.user.id, days);
+  const rows = [['type', 'name', 'messages', 'replies', 'errors', 'avg_latency_ms']];
+  (sum.series || []).forEach((d) => rows.push(['day', d.day, d.messages, d.replies, d.errors, '']));
+  (sum.agents || []).forEach((a) => rows.push(['agent', a.name, a.messages, a.replies, a.errors, a.avgLatency || '']));
+  (sum.channels || []).forEach((c) => rows.push(['channel', c.channel, c.messages, c.replies, '', '']));
+  Object.entries(sum.queries || {}).sort((a, b) => b[1] - a[1]).slice(0, 50).forEach(([q, n]) => rows.push(['question', q, n, '', '', '']));
+  const csv = rows.map((r) => r.map((v) => (/[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v))).join(',')).join('\n');
+  asDownload(res, 'agentx-analytics-' + days + 'd.csv', 'text/csv; charset=utf-8', csv);
+});
+
 api.get('/settings', async (req, res) => {
   if (!req.user.founder) return res.json({ readOnly: true });
   const st = await db.getSettings();

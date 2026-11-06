@@ -193,6 +193,7 @@ function renderAgents() {
         <label class="mini" title="Answer on WhatsApp"><span>WA</span><span class="toggle ${wa ? 'on' : ''}" data-ch="whatsapp" data-agent="${a.id}"></span></label>
         <label class="mini" title="Answer on Telegram"><span>TG</span><span class="toggle ${tg ? 'on' : ''}" data-ch="telegram" data-agent="${a.id}"></span></label>
         <div class="foot-actions">
+          <a class="icon-btn" href="/api/agents/${a.id}/export" download title="Download this agent's config">⬇️</a>
           ${pill(a.status)}
           <button class="icon-btn" data-main="${a.id}" title="${a.isMain ? 'This is the main agent' : 'Make this the main agent'}">${a.isMain ? '★' : '☆'}</button>
           <button class="icon-btn" data-test="${a.id}" title="Test chat">💬</button>
@@ -656,6 +657,7 @@ async function openThread(channel, chat) {
       <div class="thread-head">
         <b>${esc(prettyChat(chat))}</b>
         <span class="muted">${esc(channel)} · ${msgs.length}${msgs.length >= 120 ? '+ (latest shown)' : ''} messages</span>
+        <a class="btn small" href="/api/conversations/thread/export?channel=${encodeURIComponent(channel)}&chat=${encodeURIComponent(chat)}" download title="Download this conversation as markdown">Export .md</a>
       </div>
       <div class="thread-body">
         ${msgs.length ? msgs.map((m) => `
@@ -769,6 +771,13 @@ async function renderAnalytics() {
   }
 }
 $('#analyticsRange').addEventListener('change', renderAnalytics);
+// The CSV must follow whatever range is on screen, so the link is rebuilt on each change.
+function syncExportLink() {
+  const btn = $('#analyticsExport');
+  if (btn) btn.href = '/api/usage/export?days=' + encodeURIComponent($('#analyticsRange').value);
+}
+$('#analyticsRange').addEventListener('change', syncExportLink);
+syncExportLink();
 if ($('#feedbackRefresh')) $('#feedbackRefresh').onclick = renderFeedbackCard;
 if ($('#regressionRun')) $('#regressionRun').onclick = async (e) => {
   const b = e.target; b.disabled = true; b.textContent = 'Running…';
