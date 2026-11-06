@@ -258,3 +258,9 @@ input[type=range] { padding: 0; accent-color: var(--accent); }
   .conv-tools { width: 100%; }
   .input { flex: 1; min-width: 0; }
 }
+
+/* thumbs under an answer: quiet until hovered, so a chat stays readable */
+.rate { display: inline-flex; gap: 2px; margin-left: 6px; vertical-align: middle; }
+.rate .rate-btn { opacity: .45; font-size: 13px; }
+.rate .rate-btn:hover { opacity: 1; }
+.rate .rate-btn.picked { opacity: 1; }

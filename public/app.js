@@ -677,6 +677,62 @@ $('#convSearch').addEventListener('input', () => {
 $('#convRefresh').addEventListener('click', renderConversations);
 
 // ---------- analytics ----------
+
+// A rating is what turns Analytics from "how fast" into "how good": it is the only
+// signal that says whether a prompt change actually helped.
+function ratingButtons(agent, query, reply) {
+  const wrap = document.createElement('span');
+  wrap.className = 'rate';
+  const send = async (rating, btn) => {
+    try {
+      await api('/feedback', { method: 'POST', body: { agentId: agent.id, agentName: agent.name, chatId: 'web:' + (agent.ownerId || ''), channel: 'web', rating, query, reply } });
+      $$('.rate').forEach((r) => r.querySelectorAll('button').forEach((b) => { b.classList.remove('picked'); }));
+      btn.classList.add('picked');
+      btn.title = rating === 'up' ? 'Thanks, recorded' : 'Thanks, recorded as unhelpful';
+    } catch (e) { toast(e.message); }
+  };
+  ['up', 'down'].forEach((rating) => {
+    const b = document.createElement('button');
+    b.className = 'icon-btn rate-btn';
+    b.textContent = rating === 'up' ? '👍' : '👎';
+    b.title = rating === 'up' ? 'This answer was good' : 'This answer was wrong or unhelpful';
+    b.onclick = () => send(rating, b);
+    wrap.appendChild(b);
+  });
+  return wrap;
+}
+
+async function renderFeedbackCard() {
+  const el = $('#analyticsFeedback');
+  if (!el) return;
+  el.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const s = await api('/feedback/summary?days=30');
+    if (!s.total) { el.innerHTML = '<p class="muted">No ratings yet. Use 👍 or 👎 under an answer in the chat.</p>'; return; }
+    const score = s.up + s.down ? Math.round((s.up / (s.up + s.down)) * 100) : null;
+    el.innerHTML = `
+      <p class="muted" style="margin:0 0 8px">${s.up} 👍 · ${s.down} 👎${score == null ? '' : ' · ' + score + '% positive'} in the last ${s.window.days} days</p>
+      ${s.agents.length ? `<table class="table"><thead><tr><th>Agent</th><th>Good</th><th>Bad</th><th>Score</th></tr></thead><tbody>
+        ${s.agents.map((a) => `<tr><td>${esc(a.agentName || a.agentId || 'unknown')}</td><td>${a.up}</td><td>${a.down}</td><td>${a.score == null ? '—' : a.score + '%'}</td></tr>`).join('')}
+      </tbody></table>` : ''}
+      ${s.recent.filter((f) => f.rating === 'down').slice(0, 5).map((f) => `<p class="muted" style="margin:8px 0 0">👎 ${esc(String(f.query || f.reply || '').slice(0, 110))}</p>`).join('')}`;
+  } catch (e) { el.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
+}
+
+async function renderRegressionCard() {
+  const el = $('#analyticsRegression');
+  if (!el) return;
+  try {
+    const run = await api('/regression/latest');
+    if (!run) { el.innerHTML = '<p class="muted">No run recorded yet. Tap Run now, or wait for the nightly check.</p>'; return; }
+    el.innerHTML = `
+      <p class="muted" style="margin:0 0 8px">${new Date(run.at).toLocaleString()} · ${run.passed} passed, ${run.failed} failed</p>
+      <table class="table"><tbody>
+        ${(run.results || []).map((r) => `<tr><td>${r.ok ? '✅' : '❌'} ${esc(r.agent || r.agentId)}</td><td class="right muted">${r.ms}ms${r.why ? ' · ' + esc(r.why) : ''}</td></tr>`).join('')}
+      </tbody></table>`;
+  } catch (e) { el.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
+}
+
 async function renderAnalytics() {
   const days = $('#analyticsRange').value || 14;
   const el = { tiles: $('#analyticsTiles'), chart: $('#analyticsChart'), agents: $('#analyticsAgents'), queries: $('#analyticsQueries') };
@@ -713,6 +769,15 @@ async function renderAnalytics() {
   }
 }
 $('#analyticsRange').addEventListener('change', renderAnalytics);
+if ($('#feedbackRefresh')) $('#feedbackRefresh').onclick = renderFeedbackCard;
+if ($('#regressionRun')) $('#regressionRun').onclick = async (e) => {
+  const b = e.target; b.disabled = true; b.textContent = 'Running…';
+  try { await api('/regression/run', { method: 'POST', body: {} }); toast('Regression run finished'); renderRegressionCard(); }
+  catch (err) { toast(err.message); }
+  finally { b.disabled = false; b.textContent = 'Run now'; }
+};
+renderFeedbackCard();
+renderRegressionCard();
 
 // ---------- reminders ----------
 async function loadReminders() {
@@ -941,6 +1006,7 @@ async function sendChat() {
     speak.textContent = '🔊';
     speak.onclick = () => speakText(d.reply);
     thinking.appendChild(speak);
+    thinking.appendChild(ratingButtons(chatAgent, text, d.reply));
   } catch (e) { thinking.textContent = '⚠️ ' + e.message; }
   body.scrollTop = body.scrollHeight;
 }

@@ -273,6 +273,147 @@ api.get('/groq-limits', async (req, res) => {
   }
 });
 
+// ---------- reply quality: ratings and a nightly regression run ----------
+// Analytics counts replies, latency and tool calls, but none of that says whether an
+// answer was any good. A broken provider lane can also look healthy for a whole day.
+// These two close that gap: a thumbs rating attached to a reply, and a fixed set of
+// questions run on a schedule so a regression arrives as a failure, not as a slow
+// afternoon nobody can explain.
+
+const REGRESSION_SUITE = [
+  { agentId: 'agx_web01', q: "What are today's prayer times in Tarkwa?", tools: ['get_prayer_times'], maxMs: 15000 },
+  { agentId: 'agx_mad01', q: 'Give me a hadith about patience with its reference.', tools: ['search_hadith', 'cite_reference'], maxMs: 22000 },
+  { agentId: 'agx_jlyedxi', q: 'Compare the four schools on wiping the head in wudu.', tools: ['get_fiqh_ruling'], maxMs: 22000 },
+  { agentId: 'agx_hiq2v2g', q: 'Search the manuscript catalogue for Timbuktu.', tools: ['search_manuscripts'], maxMs: 28000 },
+  { agentId: 'agx_web01', q: 'Say hello in one short sentence.', tools: [], maxMs: 12000 }
+];
+
+const BAD_REPLY = /could not pull a clear answer|at my limit for this minute|used up today|demo mode|not configured/i;
+
+async function runRegression() {
+  const docs = require('./lib/docs');
+  const agents = await db.listAgents();
+  const results = [];
+  for (const c of REGRESSION_SUITE) {
+    const agent = agents.find((a) => a.id === c.agentId);
+    if (!agent) { results.push({ agentId: c.agentId, agent: c.agentId, q: c.q, ok: false, why: 'agent missing', ms: 0, tools: [] }); continue; }
+    const ctx = { channel: 'regression', chatId: 'regression:' + c.agentId, ownerId: agent.ownerId };
+    const started = Date.now();
+    let reply = '', threw = '';
+    try {
+      const out = await groqAsk(agent, [{ role: 'user', content: c.q }], ctx);
+      reply = String(out.reply || '');
+    } catch (e) { threw = String(e.message || e).slice(0, 160); }
+    const ms = Date.now() - started;
+    const used = ctx.toolUses || [];
+    const missing = c.tools.filter((t) => !used.includes(t));
+    const problems = [];
+    if (threw) problems.push('error: ' + threw);
+    if (reply.length < 20) problems.push('reply too short');
+    if (BAD_REPLY.test(reply)) problems.push('fallback message returned');
+    if (ms > c.maxMs) problems.push('slow: ' + ms + 'ms over ' + c.maxMs + 'ms');
+    if (missing.length && !threw) problems.push('no ' + missing.join(' or ') + ' call');
+    results.push({ agentId: c.agentId, agent: agent.name, q: c.q, ms, tools: used, ok: problems.length === 0, why: problems.join('; '), reply: reply.slice(0, 240) });
+  }
+  const passed = results.filter((r) => r.ok).length;
+  const run = { id: 'rg_' + Date.now().toString(36), at: new Date().toISOString(), passed, failed: results.length - passed, results };
+  await docs.put('regression', run).catch(() => {});
+  return run;
+}
+
+async function latestRegression() {
+  const docs = require('./lib/docs');
+  const runs = (await docs.list('regression')).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  return runs[0] || null;
+}
+
+api.post('/feedback', rateLimitUser(40, 60e3, 'feedback'), async (req, res) => {
+  const b = req.body || {};
+  const rating = b.rating === 'down' ? 'down' : b.rating === 'up' ? 'up' : '';
+  if (!rating) return res.status(400).json({ error: 'rating must be up or down' });
+  const docs = require('./lib/docs');
+  const doc = {
+    id: docs.newId('fb'), ownerId: req.user.id,
+    agentId: String(b.agentId || '').slice(0, 40), agentName: String(b.agentName || '').slice(0, 80),
+    chatId: String(b.chatId || '').slice(0, 160), channel: String(b.channel || 'web').slice(0, 20),
+    rating, comment: String(b.comment || '').slice(0, 500),
+    query: String(b.query || '').slice(0, 300), reply: String(b.reply || '').slice(0, 600),
+    at: new Date().toISOString()
+  };
+  await docs.put('feedback', doc);
+  res.json({ ok: true, id: doc.id });
+});
+
+api.get('/feedback/summary', async (req, res) => {
+  const days = Math.min(365, Math.max(1, Number(req.query.days) || 30));
+  const from = new Date(Date.now() - days * 864e5).toISOString();
+  const docs = require('./lib/docs');
+  const all = (await docs.list('feedback', { ownerId: req.user.id })).filter((f) => String(f.at) >= from);
+  const by = {};
+  for (const f of all) {
+    const k = f.agentId || 'unknown';
+    by[k] = by[k] || { agentId: k, agentName: f.agentName || '', up: 0, down: 0 };
+    if (f.rating === 'up') by[k].up++; else by[k].down++;
+  }
+  const list = Object.values(by).map((a) => ({ ...a, total: a.up + a.down, score: a.up + a.down ? Math.round((a.up / (a.up + a.down)) * 100) : null })).sort((a, b) => b.total - a.total);
+  res.json({
+    window: { days, from },
+    total: all.length,
+    up: all.filter((f) => f.rating === 'up').length,
+    down: all.filter((f) => f.rating === 'down').length,
+    agents: list,
+    recent: all.slice().sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 20)
+  });
+});
+
+api.post('/regression/run', async (req, res) => {
+  if (!req.user.founder) return res.status(403).json({ error: 'founder only' });
+  res.json(await runRegression());
+});
+
+api.get('/regression/latest', async (req, res) => {
+  res.json(await latestRegression());
+});
+
+// Schedulers outside Render (the Superagent workflow) need a read-only picture of
+// health without a login cookie: same numbers Analytics shows, one JSON object.
+api.get('/internal/health', async (req, res) => {
+  if (!adminKeyOk(req)) return res.status(401).json({ error: 'unauthorized' });
+  const docs = require('./lib/docs');
+  const day = new Date().toISOString().slice(0, 10);
+  const events = (await docs.list('events')).filter((e) => e.day === day);
+  const replies = events.filter((e) => e.kind === 'reply');
+  const lat = replies.map((r) => Number(r.latency) || 0).filter(Boolean).sort((a, b) => a - b);
+  const providerErrors = events.filter((e) => e.kind === 'provider_error');
+  const errors = events.filter((e) => e.kind === 'error');
+  const run = await latestRegression().catch(() => null);
+  const problems = [];
+  if (errors.length >= 5) problems.push(errors.length + ' failed replies today');
+  if (providerErrors.length > Math.max(5, replies.length)) problems.push(providerErrors.length + ' provider errors today');
+  if (lat.length >= 5) {
+    const p50 = lat[Math.floor(lat.length / 2)];
+    if (p50 > 9000) problems.push('median reply ' + p50 + 'ms');
+  }
+  if (run && run.failed > 0) problems.push(run.failed + ' regression checks failing');
+  res.json({
+    ok: problems.length === 0,
+    at: new Date().toISOString(),
+    day,
+    replies: replies.length,
+    medianLatencyMs: lat.length ? lat[Math.floor(lat.length / 2)] : null,
+    errors: errors.length,
+    providerErrors: providerErrors.length,
+    lastError: errors.length ? String(errors[errors.length - 1].error || '').slice(0, 200) : null,
+    regression: run ? { at: run.at, passed: run.passed, failed: run.failed, failures: (run.results || []).filter((r) => !r.ok).map((r) => ({ agent: r.agent, why: r.why })) } : null,
+    problems
+  });
+});
+
+api.post('/internal/regression', async (req, res) => {
+  if (!adminKeyOk(req)) return res.status(401).json({ error: 'unauthorized' });
+  res.json(await runRegression());
+});
+
 api.get('/status', async (req, res) => {
   const s = await db.getSettings();
   const cfg = Boolean((s.groqApiKey && s.groqApiKey.startsWith('gsk_')) || (process.env.GROQ_API_KEY || '').startsWith('gsk_'));
@@ -1098,6 +1239,7 @@ async function groqAsk(agent, history, ctx) {
     }
     messages.push({ role: 'assistant', content: text, tool_calls: calls, provider_parts: out.provider_parts || null });
     for (const c of calls) {
+      if (ctx) { ctx.toolUses = ctx.toolUses || []; ctx.toolUses.push(String(c.name)); }
       const result = await runTool(c.name, c.args || {}, ctx);
       messages.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: String(result == null ? '' : result) });
     }
@@ -1414,6 +1556,96 @@ async function waSendImage(to, imageUrl, caption, phoneId, token) {
   if (r && !r.ok) console.log('[WA img err]', (await r.text()).slice(0, 160));
 }
 
+// ---------- voice replies ----------
+// WhatsApp will not take a bare audio buffer: the clip is uploaded as media first
+// and the message references the returned id. Studio does the speech (edge-tts),
+// which keeps AgentX free of ffmpeg and gives real Arabic voices for Ilm answers.
+const VOICE_AR = 'ar-SA-HamedNeural';
+const VOICE_EN = 'en-US-GuyNeural';
+const waVoicePref = new Map(); // chat -> 'on' | 'off'
+
+function voiceFor(text) {
+  return /\p{Script=Arabic}/u.test(String(text || '')) ? VOICE_AR : VOICE_EN;
+}
+
+// Speech reads punctuation, not markup: a reply full of * and links sounds broken
+// out loud, and Studio rejects anything past 2000 characters.
+function speechClean(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[*_#>`~]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function studioSpeak(text, voice) {
+  const base = (process.env.STUDIO_API_URL || '').replace(/\/$/, '');
+  const key = process.env.STUDIO_API_KEY || '';
+  if (!base || !key) throw new Error('Studio voice is not configured');
+  const r = await fetch(base + '/v1/audio/speak', {
+    method: 'POST',
+    headers: { 'x-api-key': key, 'Content-Type': 'application/json', 'User-Agent': 'AgentX/1.0' },
+    body: JSON.stringify({ text: String(text).slice(0, 1900), voice: voice || VOICE_EN }),
+    signal: AbortSignal.timeout(45000)
+  });
+  if (!r.ok) throw new Error('speech failed (' + r.status + ') ' + (await r.text().catch(() => '')).slice(0, 120));
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (!buf.length) throw new Error('speech returned no audio');
+  return buf;
+}
+
+async function waUploadAudio(pid, tok, buf) {
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', 'audio/mpeg');
+  form.append('file', new Blob([buf], { type: 'audio/mpeg' }), 'reply.mp3');
+  const r = await fetch(`https://graph.facebook.com/v21.0/${pid}/media`, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: form,
+    signal: AbortSignal.timeout(45000)
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.id) throw new Error('audio upload failed: ' + String((d.error && d.error.message) || r.status).slice(0, 120));
+  return d.id;
+}
+
+async function waSendAudio(to, buf, phoneId, token) {
+  const pid = phoneId || WA_PHONE_ID, tok = token || WA_TOKEN;
+  if (!pid || !tok) return false;
+  const id = await waUploadAudio(pid, tok, buf);
+  const r = await fetch(`https://graph.facebook.com/v21.0/${pid}/messages`, {
+    method: 'POST', headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'audio', audio: { id } }),
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!r.ok) console.log('[WA audio err]', (await r.text()).slice(0, 160));
+  return r.ok;
+}
+
+// A voice note in gets a voice note back, and /voice on|off pins the preference.
+// Text still goes out whenever speech cannot be produced, so a TTS hiccup never
+// leaves the person staring at silence.
+async function replyMaybeVoice(to, text, opts) {
+  const o = opts || {};
+  const pref = waVoicePref.get(String(to));
+  if (pref !== 'on' && !(o.inboundVoice && pref !== 'off')) return o.reply(text);
+  const spoken = speechClean(text);
+  if (spoken.length < 2) return o.reply(text);
+  try {
+    const buf = await studioSpeak(spoken.slice(0, 1800), voiceFor(spoken));
+    if (await waSendAudio(to, buf, o.phoneId, o.token)) {
+      // Arabic scripture is unreadable out loud, so a reply that quotes it keeps its text.
+      if (/\p{Script=Arabic}/u.test(String(text)) && o.reply) await o.reply(text).catch(() => {});
+      return true;
+    }
+  } catch (e) {
+    console.log('[WA voice out]', String(e.message).slice(0, 160));
+  }
+  return o.reply(text);
+}
+
 app.get('/webhook/whatsapp', (req, res) => {
   const q = req.query || {};
   if (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] === WA_VERIFY_TOKEN) return res.send(q['hub.challenge'] || '');
@@ -1445,6 +1677,7 @@ async function handleWa(req) {
   const chatTarget = msg.group_id || from;
   const reply = (t) => waSend(chatTarget, t, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
   let text = '';
+  let inboundVoice = false;
   if (msg.type === 'text') {
     text = (msg.text && msg.text.body || '').trim();
   } else if (msg.type === 'audio' || msg.type === 'voice') {
@@ -1453,6 +1686,7 @@ async function handleWa(req) {
     try {
       const buf = await waMedia(msg[msg.type].id, pid, tok);
       text = await suite.transcribeBuffer(buf, msg[msg.type].mime_type || 'audio/ogg');
+      inboundVoice = true;
       console.log('[WA voice]', String(text).slice(0, 100));
       if (!text) return reply('I could not hear that clearly. Please type it or send the voice note again.');
     } catch (e) {
@@ -1509,6 +1743,14 @@ async function handleWa(req) {
     const allowed = suite.shouldAnswerGroup({ isGroup: true, mode: agent.groupReply, text, botNames: [agent.name, 'agentx'] });
     if (!allowed) { console.log('[WA group] not addressed, staying silent'); return; }
   }
+  // Reply as a voice note from here on, or stop doing that.
+  const voiceCmd = String(text).trim().match(/^\/voice(?:\s+(on|off))?$/i);
+  if (voiceCmd) {
+    const on = voiceCmd[1] ? voiceCmd[1].toLowerCase() === 'on' : waVoicePref.get(String(chatTarget)) !== 'on';
+    waVoicePref.set(String(chatTarget), on ? 'on' : 'off');
+    return reply(on ? 'Voice replies are on. I will send voice notes from now on. Send /voice off to go back to text.'
+                    : 'Voice replies are off. Send /voice on to hear answers instead.');
+  }
   const waCmd = await commands.handle(text, {
     ownerId: agent.ownerId || null, channel: 'whatsapp', key: String(hkey)
   });
@@ -1530,8 +1772,9 @@ async function handleWa(req) {
     console.log('[WA out]', String(out.reply).replace(/\n/g, ' | ').slice(0, 150));
     if (ctx.imageUrl) {
       await waSendImage(chatTarget, ctx.imageUrl, out.reply, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
+      if (inboundVoice) await replyMaybeVoice(chatTarget, out.reply, { inboundVoice, reply, phoneId: linked ? linked.waPhoneId : undefined, token: linked ? linkedToken : undefined });
     } else {
-      await reply(out.reply);
+      await replyMaybeVoice(chatTarget, out.reply, { inboundVoice, reply, phoneId: linked ? linked.waPhoneId : undefined, token: linked ? linkedToken : undefined });
     }
   } catch (e) {
     console.log('[WA err]', String(e).slice(0, 200));
