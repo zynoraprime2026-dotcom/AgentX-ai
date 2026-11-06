@@ -665,6 +665,13 @@ api.post('/agents/:id/main', async (req, res) => {
   res.json({ ok: true, main: target.id });
 });
 
+api.get('/agents/:id', async (req, res) => {
+  const list = await db.listAgents();
+  const a = list.find((x) => x.id === req.params.id && (req.user.founder || x.ownerId === req.user.id));
+  if (!a) return res.status(404).json({ error: 'agent not found' });
+  res.json(a);
+});
+
 api.put('/agents/:id', async (req, res) => {
   const a = (await db.listAgents()).find(x => x.id === req.params.id && x.ownerId === req.user.id);
   if (!a) return res.status(404).json({ error: 'agent not found' });
@@ -2160,6 +2167,13 @@ function hardenAsyncRouter(router) {
 
 app.use('/api', api);
 console.log('[api] hardened ' + hardenAsyncRouter(api) + ' handlers');
+// The SPA catch-all used to answer unknown /api/* paths with the dashboard HTML and a
+// 200, so a typo or a missing route looked like a healthy response. API paths now say
+// plainly that they do not exist.
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: 'no such endpoint: ' + req.method + ' ' + req.originalUrl.split('?')[0] });
+});
+
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 // last resort: a broken request must never take the bot offline
