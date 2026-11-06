@@ -377,7 +377,9 @@ api.get('/regression/latest', async (req, res) => {
 
 // Schedulers outside Render (the Superagent workflow) need a read-only picture of
 // health without a login cookie: same numbers Analytics shows, one JSON object.
-api.get('/internal/health', async (req, res) => {
+// Under /admin/ so the session middleware steps aside: the x-admin-key check below is
+// the only gate, which is what an external scheduler can actually satisfy.
+api.get('/admin/internal/health', async (req, res) => {
   if (!adminKeyOk(req)) return res.status(401).json({ error: 'unauthorized' });
   const docs = require('./lib/docs');
   const day = new Date().toISOString().slice(0, 10);
@@ -409,7 +411,7 @@ api.get('/internal/health', async (req, res) => {
   });
 });
 
-api.post('/internal/regression', async (req, res) => {
+api.post('/admin/internal/regression', async (req, res) => {
   if (!adminKeyOk(req)) return res.status(401).json({ error: 'unauthorized' });
   res.json(await runRegression());
 });
