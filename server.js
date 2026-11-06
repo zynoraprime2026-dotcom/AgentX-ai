@@ -1850,6 +1850,26 @@ app.post('/broadcast/fajr', async (req, res) => {
   res.json({ ok: true, results: await sendFajrBroadcast() });
 });
 
+// Reminders and triggers run on an internal ticker, which only helps while the
+// process is awake. This endpoint is the other half: any external scheduler can call
+// it and the tick runs immediately, so a sleeping free-tier host still fires on time.
+// `force` skips the idle window, which is what a cron wants and what a manual
+// "check now" expects.
+async function runTick(req, res) {
+  if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized: send CRON_SECRET as a Bearer token, x-admin-key, or a founder session' });
+  const out = await suite.tick({ force: true });
+  res.json({
+    ok: true,
+    at: new Date().toISOString(),
+    reminders: out.reminders || [],
+    triggers: out.triggers || [],
+    nextWakeAt: out.nextWakeAt || null,
+    skipped: out.skipped || null
+  });
+}
+api.get('/cron/tick', runTick);
+api.post('/cron/tick', runTick);
+
 // Vercel cron (or any external scheduler) pings this GET daily before dawn.
 // Guarded by CRON_SECRET (falls back to BROADCAST_TOKEN so either can be used).
 api.get('/cron/fajr', async (req, res) => {
