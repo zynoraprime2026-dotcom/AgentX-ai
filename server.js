@@ -1434,7 +1434,16 @@ async function handleWa(req) {
       await db.clearHistory('whatsapp', hkey);
       return reply(`Switched to ${pick.emoji || ''} *${pick.name}*. Ask away.`);
     }
-    agent = shared.find(a => a.id === waChoice.get(from)) || shared.find(a => a.id === 'agx_web01') || shared[0];
+    // Keyword routing before the helpdesk default: a hadith question sent to the
+    // shared number used to land on AgentX Assistant, which has no Ilm tools, so it
+    // answered scripture from memory. Islamic questions now go to an agent that can
+    // actually look things up.
+    const ISLAMIC = /\b(quran|qur'an|surah|ayah|hadith|sunnah|dua|du'a|fiqh|wudu|salah|salat|prayer|prayers|fasting|zakat|hajj|prophet|allah|islam|muslim|madrasa|tafsir)\b|\p{Script=Arabic}/iu;
+    const ilmAgents = shared.filter(a => Array.isArray(a.toolsets) && a.toolsets.includes('ilm'));
+    const islamicPick = ISLAMIC.test(text)
+      ? (ilmAgents.find(a => a.id === 'agx_mad01') || ilmAgents[0])
+      : null;
+    agent = shared.find(a => a.id === waChoice.get(from)) || islamicPick || shared.find(a => a.id === 'agx_web01') || shared[0];
   }
   if (!agent) return;
   const isGroup = Boolean(msg.group_id || /@g\.us$/i.test(String(msg.group_id || '')) || /@g\.us$/i.test(String(from)));
