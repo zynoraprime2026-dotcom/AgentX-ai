@@ -596,8 +596,39 @@ async function turathCall(pathname, params) {
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error('Turath API error: ' + JSON.stringify(d).slice(0, 180));
-  const str = typeof d === 'string' ? d : JSON.stringify(d);
-  return str.length > 1700 ? str.slice(0, 1700) + '…[truncated]' : str;
+  return shapeTurath(d);
+}
+
+// The raw manuscript payload is ~26KB per hit (full description, chain, sources,
+// duplicate camelCase aliases). Cutting that blob at 1700 characters handed the
+// model half a JSON document, so it could not tell a real result from a broken one
+// and searched again - which is where the 15-second replies came from. Keep the
+// fields that identify a manuscript and drop the rest.
+const TURATH_KEEP = ['id', 'title', 'title_ar', 'titleAr', 'author', 'date_written', 'century', 'language', 'script', 'subject', 'region', 'holding', 'read_url', 'readUrl', 'description'];
+const TURATH_DROP = /^(image|image_url|imageUrl|digital|digital_url|digitalUrl|audio|audio_url|audioUrl|chain|sources|created_at)$/;
+
+function shapeTurath(d) {
+  if (typeof d === 'string') return d.slice(0, 3000);
+  if (!d || typeof d !== 'object') return JSON.stringify(d).slice(0, 3000);
+  const listKey = ['manuscripts', 'results', 'items', 'scholars', 'events', 'data'].find((k) => Array.isArray(d[k]));
+  if (!listKey) return JSON.stringify(d).slice(0, 3000);
+  const items = d[listKey].slice(0, 5).map((it) => {
+    if (!it || typeof it !== 'object') return it;
+    const out = {};
+    for (const k of Object.keys(it)) {
+      if (TURATH_DROP.test(k)) continue;
+      const isKept = TURATH_KEEP.includes(k);
+      const v = it[k];
+      if (typeof v === 'string') {
+        if (!isKept && v.length > 120) continue;
+        out[k] = v.length > 240 ? v.slice(0, 240) + '…' : v;
+      } else if (v !== null && typeof v !== 'object') {
+        out[k] = v;
+      }
+    }
+    return out;
+  });
+  return JSON.stringify({ total: d.total, shown: items.length, [listKey]: items });
 }
 
 const TURATH_TOOLS = TURATH_API_KEY ? [
