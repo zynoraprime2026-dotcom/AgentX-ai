@@ -617,7 +617,7 @@ const TOOLS = [
       parameters: { type: 'object', properties: { surah: { type: 'string' }, ayah: { type: 'string' } }, required: ['surah', 'ayah'] } } },
   { type: 'function', function: {
       name: 'search_hadith',
-      description: 'Search hadith by keyword.',
+      description: 'Search hadith by keyword. Returns the verbatim Arabic text and English translation of up to two matches with collection and number, so you can quote in either language.',
       parameters: { type: 'object', properties: { query: { type: 'string' } }, required: [] } } },
   { type: 'function', function: {
       name: 'search_dictionary',
@@ -725,21 +725,26 @@ async function runTool(name, args, ctx) {
       case 'get_prayer_times': return await ilmCall('/v1/prayer-times', { city: args.city, date: args.date, method: 'MuslimWorldLeague' });
       case 'get_quran_ayah': return await ilmCall(`/v1/quran/${args.surah}/${args.ayah}`, { translation: args.translation });
       case 'search_hadith': {
-        // Verbatim English text for a couple of matches, rendered as readable
-        // lines so the model quotes real wording instead of guessing at a
-        // JSON string that used to arrive cut in half.
+        // Verbatim Arabic + English for a couple of matches, rendered as
+        // readable blocks so the model quotes real wording in either language
+        // instead of guessing at a JSON string that used to arrive cut in half.
         const d = await ilmCall('/v1/hadith/search', {
           q: args.query, collection: args.collection, language: args.language,
-          limit: 2, fields: 'narrator,collection,hadith_number,book_name,grade,text_english'
+          limit: 2, fields: 'narrator,collection,hadith_number,book_name,grade,text_arabic,text_english'
         }, { as: 'json' });
         const rows = (d.results || []);
         if (!rows.length) return `No hadith found for "${args.query}". Suggest a different keyword.`;
-        const lines = rows.map(r => {
+        const blocks = rows.map(r => {
           const head = `${r.collection} ${r.hadith_number}${r.book_name ? ' (Book: ' + r.book_name + ')' : ''}${r.narrator ? ' — narrated by ' + r.narrator : ''}`;
-          const grade = r.grade ? `\nGrade: ${r.grade}` : '';
-          return `${head}\n${r.text_english}${grade}`;
+          const arabic = r.text_arabic ? `ARABIC:\n${r.text_arabic}\n` : 'ARABIC: (not available for this record)\n';
+          const english = r.text_english ? `ENGLISH:\n${r.text_english}\n` : 'ENGLISH: (not available for this record)\n';
+          const grade = r.grade ? `Grade: ${r.grade}\n` : '';
+          return `${head}\n${arabic}${english}${grade}`.trim();
         });
-        return `Hadith matches for "${d.query}" (showing ${lines.length} of ${d.total}).\n\nThe text below is verbatim from the collection: quote it exactly as written and never invent or paraphrase wording.\n\n${lines.join('\n\n---\n\n')}`;
+        return `Hadith matches for "${d.query}" (showing ${blocks.length} of ${d.total}).\n\n`
+          + 'Everything below is verbatim from the collection. Quote the wording exactly as given, never invent or paraphrase it. '
+          + 'When the user writes in Arabic, lead with the ARABIC text and follow with the ENGLISH meaning. When they write in English, lead with ENGLISH and add the ARABIC underneath.\n\n'
+          + blocks.join('\n\n---\n\n');
       }
       case 'search_dictionary':
         return args.mode === 'root'
