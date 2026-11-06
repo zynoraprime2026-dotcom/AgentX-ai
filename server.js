@@ -724,7 +724,7 @@ async function runTool(name, args, ctx) {
       case 'search_historical_events': return await turathCall('/api/events', { q: args.query, year: args.year, per: 5 });
       case 'get_prayer_times': return await ilmCall('/v1/prayer-times', { city: args.city, date: args.date, method: 'MuslimWorldLeague' });
       case 'get_quran_ayah': return await ilmCall(`/v1/quran/${args.surah}/${args.ayah}`, { translation: args.translation });
-      case 'search_hadith': return await ilmCall('/v1/hadith/search', { q: args.query, collection: args.collection, language: args.language, limit: 5 });
+      case 'search_hadith': return await ilmCall('/v1/hadith/search', { q: args.query, collection: args.collection, language: args.language, limit: 3, excerpt: 180, fields: 'narrator,collection,hadith_number,grade,text_english,text_arabic' });
       case 'search_dictionary':
         return args.mode === 'root'
           ? await ilmCall('/v1/dictionary/root/' + encodeURIComponent(args.query))
