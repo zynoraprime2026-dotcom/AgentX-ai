@@ -726,6 +726,28 @@ async function ilmCall(pathname, params, opts) {
 const STUDIO_API_URL = (process.env.STUDIO_API_URL || 'https://studio-api-nqpm.onrender.com').replace(/\/$/, '');
 const STUDIO_API_KEY = process.env.STUDIO_API_KEY || '';
 
+// ---------- image framing ----------
+// Pictures came back square and flat because the raw sentence went straight to the model.
+// A short style line plus the right frame for the intended use is the difference between
+// something that looks designed and something that looks generated.
+function planImage(brief, width, height) {
+  const t = String(brief).toLowerCase();
+  const has = (...w) => w.some((x) => t.includes(x));
+  let kind = 'square', w = 1024, h = 1024;
+  if (has('poster', 'flyer', 'banner', 'invitation', 'invite', 'announcement', 'memo', 'notice')) { kind = 'poster'; w = 1024; h = 1536; }
+  else if (has('thumbnail', 'cover', 'youtube', 'hero', 'landscape', 'wide', 'wallpaper')) { kind = 'landscape'; w = 1536; h = 1024; }
+  else if (has('story', 'reel', 'vertical', 'tiktok', 'phone wallpaper')) { kind = 'portrait'; w = 1024; h = 1536; }
+  const pw = parseInt(width, 10); const ph = parseInt(height, 10);
+  if (pw) w = Math.min(Math.max(pw, 256), 1920);
+  if (ph) h = Math.min(Math.max(ph, 256), 1920);
+  let style;
+  if (has('logo', 'icon', 'badge', 'emblem', 'monogram')) style = 'clean vector mark, flat colours, crisp edges, centred on a plain background, no lettering';
+  else if (has('photo', 'photograph', 'realistic', 'portrait of', 'sunset', 'landscape of', 'market', 'mosque')) style = 'professional photography, soft natural light, shallow depth of field, sharp focus on the subject';
+  else if (has('poster', 'flyer', 'banner', 'thumbnail', 'cover', 'chart', 'diagram', 'infographic')) style = 'clean modern graphic design, strong focal point, generous negative space, restrained palette';
+  else style = 'polished editorial illustration, balanced composition, soft light, fine detail';
+  return { kind, width: w, height: h, prompt: String(brief).slice(0, 700) + ', ' + style };
+}
+
 async function studioCall(pathname, body) {
   if (!STUDIO_API_KEY) throw new Error('Studio API is not configured on this server.');
   const r = await fetch(STUDIO_API_URL + pathname, {
@@ -762,9 +784,9 @@ async function toolQuota(ctx, tool, limit) {
 const STUDIO_TOOLS = STUDIO_API_KEY ? [
   { type: 'function', function: {
       name: 'generate_image',
-      description: 'Create an original image from a text prompt and get back a public image URL. Use for posters, illustrations, reminders, thumbnails and visual explainers. Keep prompts descriptive and free of forbidden imagery.',
+      description: 'Create an original image from a text prompt and get back a public image URL. Use for posters, illustrations, reminders, thumbnails and visual explainers. Give the subject and any wording that belongs on the piece; lighting, composition and the frame are added for you, so do not pad the prompt with style words.',
       parameters: { type: 'object', properties: {
-        prompt: { type: 'string', description: 'Detailed description of the image to generate' },
+        prompt: { type: 'string', description: 'What the picture shows, in one or two plain sentences' },
         width: { type: 'integer', description: 'Pixel width, 256-1920 (default 1024)' },
         height: { type: 'integer', description: 'Pixel height, 256-1920 (default 1024)' }
       }, required: ['prompt'] } } },
@@ -1067,11 +1089,16 @@ async function runTool(name, args, ctx) {
       }
       case 'generate_image': {
         if (!(await toolQuota(ctx, 'image', 3))) return 'This chat has reached its daily image limit (' + quotaCap(ctx, 'image', 3) + '). Offer a text description instead.';
-        const raw = await studioCall('/v1/image/generate', { prompt: args.prompt, width: args.width, height: args.height });
+        const brief = String((args && args.prompt) || '').trim();
+        if (brief.length < 3) return 'Ask what the picture should show, then call this again.';
+        const shot = planImage(brief, args.width, args.height);
+        const payload = { prompt: shot.prompt, width: shot.width, height: shot.height };
+        if (args.preset) payload.preset = String(args.preset).slice(0, 60);
+        const raw = await studioCall('/v1/image/generate', payload);
         try {
           const j = JSON.parse(raw);
           if (j && j.url && ctx) ctx.imageUrl = j.url;
-          return 'Image generated (share this URL): ' + (j.url || raw);
+          return 'Image generated (share this URL, do not describe it): ' + (j.url || raw) + '\nFramed ' + shot.width + 'x' + shot.height + ' for a ' + shot.kind + ' composition.';
         } catch (e) { return raw; }
       }
       case 'create_content': {
