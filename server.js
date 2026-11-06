@@ -922,7 +922,10 @@ async function runTool(name, args, ctx) {
         // Web lookups are the expensive-by-latency path and the one an agent could
         // lean on instead of answering, so they are capped per chat per day.
         if (!(await toolQuota(ctx, 'web', 30))) return 'This chat has reached its daily limit for web searches. Answer from what you know and say the web allowance is used up.';
-        return await web.webSearch(args.query, { fresh: args.fresh === true });
+        // Models reliably forget the fresh flag, so a question that is plainly about
+        // now (this week, latest, price today) gets news first without being asked.
+        const wantsNews = /\b(today|tonight|yesterday|this (week|month|morning|afternoon)|latest|current|right now|news|headlines|price|prices|score|who won|just announced)\b/i.test(String(args.query || ''));
+        return await web.webSearch(args.query, { fresh: args.fresh === true || wantsNews });
       }
       case 'read_page': return await web.readPage(args.url);
       case 'list_agents': {
