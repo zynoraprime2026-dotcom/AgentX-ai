@@ -356,36 +356,47 @@ const store = {
   // the newest row for a chat is its last activity and the best ordering available.
   async listThreads(limit) {
     const n = Math.min(300, Math.max(1, Number(limit) || 120));
+    // Older rows stored the bare number, newer ones store "<phone_number_id>:<number>",
+    // so the same person appeared as two threads. Group on the normalised number.
     if (pool) {
       const r = await pool.query(`
-        WITH t AS (
-          SELECT channel, chat_id, count(*)::int AS messages, max(id) AS last_id
-          FROM agx_hist GROUP BY channel, chat_id
+        WITH norm AS (
+          SELECT channel, regexp_replace(chat_id, '^[0-9]+:', '') AS chat_key, id, role, content
+          FROM agx_hist
+        ), t AS (
+          SELECT channel, chat_key, count(*)::int AS messages, max(id) AS last_id
+          FROM norm GROUP BY channel, chat_key
         )
-        SELECT t.channel, t.chat_id, t.messages, t.last_id, h.role AS last_role, h.content AS last_text
-        FROM t JOIN agx_hist h ON h.id = t.last_id
+        SELECT t.channel, t.chat_key AS chat_id, t.messages, n.role AS last_role, n.content AS last_text
+        FROM t JOIN norm n ON n.id = t.last_id
         ORDER BY t.last_id DESC LIMIT $1`, [n]);
       return r.rows;
     }
     const all = readJson(path.join(DATA_DIR, 'histories.json'), {});
-    const out = [];
+    const merged = {};
     for (const channel of Object.keys(all)) {
       for (const chatId of Object.keys(all[channel] || {})) {
+        const key = channel + '|' + String(chatId).replace(/^[0-9]+:/, '');
+        merged[key] = merged[key] || { channel, chat_id: String(chatId).replace(/^[0-9]+:/, ''), messages: 0, last_text: '' };
         const msgs = all[channel][chatId] || [];
-        const last = msgs[msgs.length - 1] || {};
-        out.push({ channel, chat_id: chatId, messages: msgs.length, last_role: last.role || null, last_text: last.content || '' });
+        merged[key].messages += msgs.length;
+        if (msgs.length) merged[key].last_text = msgs[msgs.length - 1].content || '';
       }
     }
-    return out.slice(0, n);
+    return Object.values(merged).slice(0, n);
   },
   async listMessages(channel, chatId, limit) {
     const n = Math.min(500, Math.max(1, Number(limit) || 120));
     if (pool) {
-      const r = await pool.query('SELECT id, role, content FROM agx_hist WHERE channel=$1 AND chat_id=$2 ORDER BY id DESC LIMIT $3', [channel, String(chatId), n]);
+      const r = await pool.query(
+        "SELECT id, role, content FROM agx_hist WHERE channel=$1 AND regexp_replace(chat_id, '^[0-9]+:', '') = $2 ORDER BY id DESC LIMIT $3",
+        [channel, String(chatId).replace(/^[0-9]+:/, ''), n]);
       return r.rows.reverse();
     }
     const all = readJson(path.join(DATA_DIR, 'histories.json'), {});
-    return ((all[channel] || {})[chatId] || []).slice(-n);
+    const bucket = all[channel] || {};
+    const key = Object.keys(bucket).find((k) => String(k).replace(/^[0-9]+:/, '') === String(chatId).replace(/^[0-9]+:/, ''));
+    return (key ? bucket[key] : []).slice(-n);
   },
   async toolUsage(days) {
     const span = Math.min(90, Math.max(1, Number(days) || 30));

@@ -655,7 +655,7 @@ async function openThread(channel, chat) {
     thread.innerHTML = `
       <div class="thread-head">
         <b>${esc(prettyChat(chat))}</b>
-        <span class="muted">${esc(channel)} · ${msgs.length} messages</span>
+        <span class="muted">${esc(channel)} · ${msgs.length}${msgs.length >= 120 ? '+ (latest shown)' : ''} messages</span>
       </div>
       <div class="thread-body">
         ${msgs.length ? msgs.map((m) => `
