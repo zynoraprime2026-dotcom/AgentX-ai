@@ -699,10 +699,18 @@ async function studioCall(pathname, body) {
 }
 
 // Per-chat daily caps so a public agent cannot burn rendering quota
+// Per-chat daily caps guard paid credits: one image or one video costs real money.
+// They were applied to everyone, which meant the person paying for the credits hit
+// the same wall as a stranger, so the owner gets a working allowance instead.
+const OWNER_CAPS = { image: 25, video: 6, web: 120 };
+function quotaCap(ctx, tool, limit) {
+  return (ctx && ctx.canManage && OWNER_CAPS[tool]) ? Math.max(limit, OWNER_CAPS[tool]) : limit;
+}
 async function toolQuota(ctx, tool, limit) {
   try {
     const p = require('./db').poolRef;
     if (!p || !ctx || !ctx.chatId) return true;
+    limit = quotaCap(ctx, tool, limit);
     const day = new Date().toISOString().slice(0, 10);
     await p.query('CREATE TABLE IF NOT EXISTS agx_tool_uses (chat_id text, day text, tool text, uses int NOT NULL DEFAULT 0, PRIMARY KEY (chat_id, day, tool))');
     const r = await p.query('INSERT INTO agx_tool_uses (chat_id, day, tool, uses) VALUES ($1,$2,$3,1) ON CONFLICT (chat_id, day, tool) DO UPDATE SET uses = agx_tool_uses.uses + 1 RETURNING uses', [String(ctx.chatId), day, tool]);
@@ -956,7 +964,7 @@ async function runTool(name, args, ctx) {
       case 'web_search': {
         // Web lookups are the expensive-by-latency path and the one an agent could
         // lean on instead of answering, so they are capped per chat per day.
-        if (!(await toolQuota(ctx, 'web', 30))) return 'This chat has reached its daily limit for web searches. Answer from what you know and say the web allowance is used up.';
+        if (!(await toolQuota(ctx, 'web', 30))) return 'This chat has reached its daily web-search limit (' + quotaCap(ctx, 'web', 30) + '). Answer from what you know and say the web allowance is used up.';
         // Models reliably forget the fresh flag, so a question that is plainly about
         // now (this week, latest, price today) gets news first without being asked.
         const wantsNews = /\b(today|tonight|yesterday|this (week|month|morning|afternoon)|latest|current|right now|news|headlines|price|prices|score|who won|just announced)\b/i.test(String(args.query || ''));
@@ -1017,7 +1025,7 @@ async function runTool(name, args, ctx) {
         return JSON.stringify(draft);
       }
       case 'generate_image': {
-        if (!(await toolQuota(ctx, 'image', 3))) return 'This chat has reached its daily limit of 3 images. Tell the user to try again tomorrow, or offer a text description instead.';
+        if (!(await toolQuota(ctx, 'image', 3))) return 'This chat has reached its daily image limit (' + quotaCap(ctx, 'image', 3) + '). Offer a text description instead.';
         const raw = await studioCall('/v1/image/generate', { prompt: args.prompt, width: args.width, height: args.height });
         try {
           const j = JSON.parse(raw);
