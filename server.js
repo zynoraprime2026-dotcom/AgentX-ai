@@ -2249,7 +2249,12 @@ async function handleWa(req) {
   const waStarted = Date.now();
   suite.logEvent({ ...waBase, kind: 'message', query: String(text).slice(0, 300) });
   try {
-    const ctx = { channel: 'whatsapp', chatId: String(hkey), isGroup };
+    // The owner's own number gets the same powers as his Telegram chat: inbox,
+    // admin and deploys. Anyone else messaging the business number stays a customer.
+    const ownerWa = String(process.env.OWNER_WHATSAPP_NUMBER || '').replace(/\D/g, '');
+    const fromDigits = String(from || '').replace(/\D/g, '');
+    const canManage = Boolean(ownerWa) && !isGroup && fromDigits === ownerWa;
+    const ctx = { channel: 'whatsapp', chatId: String(hkey), isGroup, canManage };
     const out = await groqAsk(agent, history, ctx);
     if (out.demo) { console.log('[WA out] demo mode'); return; }
     bumpMessages(agent.id);
