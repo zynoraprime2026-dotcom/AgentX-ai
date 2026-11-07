@@ -1830,16 +1830,19 @@ async function handleTgMessage(msg) {
   }
 }
 
-app.post('/webhook/telegram', (req, res) => {
+app.post('/webhook/telegram', async (req, res) => {
   const expected = tgSecretToken();
   if (expected && !safeEq(req.get('x-telegram-bot-api-secret-token') || '', expected)) return res.status(401).end();
   const upd = req.body || {};
   const msg = upd.message || upd.edited_message;
   if (upd.update_id != null && !firstDelivery('tg', String(upd.update_id))) return res.json({ ok: true, duplicate: true });
-  if (msg && msg.voice) {
-    handleTgVoice(msg).catch(e => console.log('[TG voice]', String(e && e.message || e).slice(0, 160)));
-  } else if (msg && msg.text) {
-    handleTgMessage(msg).catch(e => console.log('[TG msg]', String(e && e.message || e).slice(0, 160)));
+  // Awaited, not fired and forgotten: once the response is sent the serverless
+  // function can be frozen mid-answer, which is how a reply and its log vanished.
+  try {
+    if (msg && msg.voice) await handleTgVoice(msg);
+    else if (msg && msg.text) await handleTgMessage(msg);
+  } catch (e) {
+    console.log('[TG]', String(e && e.message || e).slice(0, 160));
   }
   res.json({ ok: true });
 });
