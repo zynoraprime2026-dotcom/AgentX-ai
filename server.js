@@ -2033,6 +2033,22 @@ async function replyMaybeVoice(to, text, opts) {
   return o.reply(text);
 }
 
+// Finds the owner's Telegram chat id: the history table keys rows by chat_id, so
+// the first private chat that has ever messaged the bot shows up here.
+app.get('/api/admin/tg-log', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const p = require('./db').poolRef;
+    if (!p) return res.status(503).json({ error: 'Postgres not connected' });
+    const rows = await p.query('SELECT chat_id, role, content, id FROM agx_hist WHERE channel = $1 ORDER BY id DESC LIMIT 40', ['telegram']);
+    const seen = {};
+    for (const r of (rows.rows || [])) {
+      if (!seen[r.chat_id]) seen[r.chat_id] = { chatId: r.chat_id, lastMessage: String(r.content || '').slice(0, 80) };
+    }
+    res.json({ configured: String(process.env.OWNER_TELEGRAM_ID || '') || null, chats: Object.values(seen) });
+  } catch (e) { res.status(500).json({ error: String(e.message).slice(0, 160) }); }
+});
+
 app.get('/api/admin/wa-log', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
