@@ -1127,16 +1127,17 @@ async function runTool(name, args, ctx) {
         const social = require('./lib/social');
         if (!social.configured()) return 'No Facebook Page token is set yet, so there is nothing to publish to. Tell the owner META_PAGE_TOKEN is missing.';
         const w = await social.whoami();
-        return 'Connected Page: ' + (w.name || w.pageId) + ' (id ' + w.pageId + ')' + (w.followers ? ', ' + w.followers + ' followers' : '') + '.';
+        if (!w.pages.length) return 'The token reaches no Pages — check the System User has Page assets assigned.';
+        return 'Connected Pages: ' + w.pages.map(p => p.name + ' (id ' + p.id + (p.followers ? ', ' + p.followers + ' followers' : '') + ')').join('; ') + '.';
       }
       case 'post_to_page': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         const social = require('./lib/social');
         if (!social.configured()) return 'No Facebook Page token is set yet, so nothing can be published. Tell the owner META_PAGE_TOKEN is missing.';
         const out = args.imageUrl
-          ? await social.postImage({ imageUrl: args.imageUrl, message: args.message })
-          : await social.postText({ message: args.message, link: args.link });
-        return 'Published to the Page: ' + out.url;
+          ? await social.postImage({ page: args.page, imageUrl: args.imageUrl, message: args.message })
+          : await social.postText({ page: args.page, message: args.message, link: args.link });
+        return 'Published to ' + out.page + ': ' + out.url;
       }
       case 'github_write_file': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
@@ -1431,8 +1432,9 @@ const SOCIAL_TOOLS = [
       parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: {
       name: 'post_to_page',
-      description: 'Publish a post to the connected Facebook Page. The post is public the moment it is published, so read the exact wording back to the owner and only call this after they have approved that wording. Use imageUrl for a picture post and link for a link post, not both.',
+      description: 'Publish a post to one of the connected Facebook Pages. The post is public the moment it is published, so read the exact wording and the Page name back to the owner and only call this after they have approved both. Use imageUrl for a picture post and link for a link post, not both.',
       parameters: { type: 'object', properties: {
+        page: { type: 'string', description: 'Which Page to post to, as the owner names it. Required when more than one Page is connected.' },
         message: { type: 'string', description: 'The exact text of the post' },
         imageUrl: { type: 'string', description: 'Optional public image URL for a photo post' },
         link: { type: 'string', description: 'Optional link for a text post' }
