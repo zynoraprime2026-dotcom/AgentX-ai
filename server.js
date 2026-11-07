@@ -947,6 +947,16 @@ const DEV_TOOLS = [
       description: 'Latest commits on main: sha, date, message.',
       parameters: { type: 'object', properties: { limit: { type: 'number' } } } } },
   { type: 'function', function: {
+      name: 'github_write_file',
+      description: 'Commit one file to a GitHub repo the owner names. Creates it if missing, updates it if it exists. Use only when the owner asks you to put something on GitHub, and read the repo, path and a short summary of the content back to them first. Never commit secrets, keys or tokens.',
+      parameters: { type: 'object', properties: {
+        repo: { type: 'string', description: 'owner/name, e.g. zynoraprime2026-dotcom/notes' },
+        path: { type: 'string', description: 'File path inside the repo, e.g. docs/today.md' },
+        content: { type: 'string', description: 'The full file text' },
+        message: { type: 'string', description: 'Commit message' },
+        branch: { type: 'string', description: 'Optional branch; the default branch when omitted' }
+      }, required: ['repo', 'path', 'content'] } } },
+  { type: 'function', function: {
       name: 'render_deploy_status',
       description: 'Whether the live Render service is running the latest commit, with the last three deploys.',
       parameters: { type: 'object', properties: {} } } },
@@ -1111,6 +1121,14 @@ async function runTool(name, args, ctx) {
         if ((t.active !== false) === (action === 'resume')) return '"' + t.name + '" is already ' + action + 'd.';
         await docs.put('triggers', { ...t, active: action === 'resume' });
         return '"' + t.name + '" is now ' + (action === 'resume' ? 'active' : 'paused') + '.';
+      }
+      case 'github_write_file': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const d = await devtools.writeFile({
+          repo: args.repo, path: args.path, content: args.content,
+          message: args.message, branch: args.branch
+        });
+        return d.action + ' ' + d.path + ' on ' + d.repo + ' (commit ' + d.commit + '). ' + d.url;
       }
       case 'github_list': case 'github_file': case 'github_search_code':
       case 'github_commits': case 'render_deploy_status': case 'render_logs': {
