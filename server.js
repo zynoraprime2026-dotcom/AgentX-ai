@@ -2219,6 +2219,20 @@ api.get('/admin/dbtest', async (req, res) => {
   }).on('error', (e) => { events.push('ipinfo-error: ' + String(e).slice(0, 80)); r(); }));
   res.json({ node: process.version, events });
 });
+// Founder-only view of what the inbox tool sees. Same reader the agent uses, so a
+// failure here is the same failure the chat would hit.
+api.get('/admin/inbox', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
+  const inbox = require('./lib/inbox');
+  if (!inbox.configured()) return res.status(409).json({ error: 'inbox not set', hint: 'add GMAIL_USER and GMAIL_APP_PASSWORD' });
+  try {
+    const rows = await inbox.recent(Math.min(Number(req.query.limit) || 10, 25));
+    res.json({ account: inbox.cfg().user, count: rows.length, unread: rows.filter((r) => r.unread).length, messages: rows });
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+
 api.get('/admin/stats', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   const agents = await db.listAgents();
