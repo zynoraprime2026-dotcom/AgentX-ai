@@ -1431,10 +1431,12 @@ function toolsFor(agent, ctx) {
   if (!(ctx && ctx.canManage)) {
     return collectTools(keys.filter((k) => k !== 'manage' && k !== 'dev' && k !== 'email'));
   }
-  // The owner's own chat can send email from the workspace address. It is granted
-  // here rather than inferred because a customer-facing channel must never be able
-  // to write to an address they name.
-  const ownerKeys = keys.includes('email') ? keys : keys.concat('email');
+  // The owner's own chat can send email from the workspace address and reach his own
+  // repo. Both are granted here rather than inferred: a customer-facing channel must
+  // never write to an address they name or commit to his account. His chat is the one
+  // place the number IS the authentication.
+  const ownerKeys = keys.slice();
+  for (const extra of ['email', 'dev']) if (!ownerKeys.includes(extra)) ownerKeys.push(extra);
   return collectTools(ownerKeys);
 }
 
