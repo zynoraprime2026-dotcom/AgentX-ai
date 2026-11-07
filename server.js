@@ -1743,6 +1743,9 @@ async function handleTgMessage(msg) {
       }
       return tgSend(chatId, `No live agent named "${arg}". Use /agents to list them.`);
     }
+    if (cmd === '/id') {
+      return tgSend(chatId, 'Your Telegram chat id is ' + chatId + '.');
+    }
     if (cmd === '/remind') {
       const r = await suite.quickReminder({ agent: anyAgent, channel: 'telegram', chatId, arg });
       return tgSend(chatId, r.reply);
@@ -1772,7 +1775,11 @@ async function handleTgMessage(msg) {
   suite.logEvent({ ...tgBase, kind: 'message', query: String(text).slice(0, 300) });
   try {
     const history = [...(await tgHist(chatId)), { role: 'user', content: text }].slice(-12);
-    const ctx = { channel: 'telegram', chatId: String(chatId), isGroup };
+    // The owner's own private chat manages the workspace: that is what makes the
+    // email tools available there. Groups and strangers never get it.
+    const ownerTg = String(process.env.OWNER_TELEGRAM_ID || '').trim();
+    const canManage = Boolean(ownerTg) && !isGroup && String(chatId) === ownerTg;
+    const ctx = { channel: 'telegram', chatId: String(chatId), isGroup, canManage };
     const out = await groqAsk(agent, history, ctx);
     if (out.demo) return; // never send demo noise to Telegram
     bumpMessages(agent.id);
