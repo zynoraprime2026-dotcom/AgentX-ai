@@ -1827,6 +1827,22 @@ const WA_PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 const WA_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN || '';
 const waChoice = new Map(); // shared-number users: sender -> chosen agent id (transient)
 
+// WhatsApp understands only *bold*, _italic_, ~strike~ and `code`. Models keep
+// emitting GitHub Markdown, so convert it rather than letting the reader see the
+// raw syntax: "> *quoted hadith*" was arriving with a literal ">" and dash.
+function waFmt(text) {
+  let t = String(text == null ? '' : text);
+  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '$1 ($2)'); // links: keep both, WhatsApp hides the syntax
+  t = t.replace(/^\s{0,3}>\s?/gm, '');                                       // blockquote markers
+  t = t.replace(/^\s{0,3}#{1,6}\s+(.+)$/gm, '*$1*');                         // headings -> bold
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, '*$1*');                             // **bold** -> *bold*
+  t = t.replace(/__([^_\n]+)__/g, '_$1_');                                    // __italic__ -> _italic_
+  t = t.replace(/^\s{0,3}[-*+]\s+/gm, '• ');                                  // bullets
+  t = t.replace(/^\s*---\s*$/gm, '');                                        // horizontal rules
+  t = t.replace(/\*\*\*/g, '*').replace(/\n{3,}/g, '\n\n');                 // stray emphasis glue
+  return t.trim();
+}
+
 async function waSend(to, text, phoneId, token) {
   const pid = phoneId || WA_PHONE_ID, tok = token || WA_TOKEN;
   if (!pid || !tok) return; // not configured yet
@@ -2026,8 +2042,8 @@ async function handleWa(req) {
   const reply = async (t) => {
     const started = Date.now();
     try {
-      await waSend(chatTarget, t, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
-      await require('./lib/suite').logEvent({ channel: 'whatsapp', kind: 'wa_out', query: String(t).slice(0, 120) });
+      await waSend(chatTarget, waFmt(t), linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
+      await require('./lib/suite').logEvent({ channel: 'whatsapp', kind: 'wa_out', query: String(t).slice(0, 400) });
     } catch (e) {
       await require('./lib/suite').logEvent({
         channel: 'whatsapp', kind: 'wa_err',
@@ -2131,7 +2147,7 @@ async function handleWa(req) {
     await db.appendHistory('whatsapp', hkey, 'assistant', out.reply);
     console.log('[WA out]', String(out.reply).replace(/\n/g, ' | ').slice(0, 150));
     if (ctx.imageUrl) {
-      await waSendImage(chatTarget, ctx.imageUrl, out.reply, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
+      await waSendImage(chatTarget, ctx.imageUrl, waFmt(out.reply), linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
       if (inboundVoice) await replyMaybeVoice(chatTarget, out.reply, { inboundVoice, reply, phoneId: linked ? linked.waPhoneId : undefined, token: linked ? linkedToken : undefined });
     } else {
       await replyMaybeVoice(chatTarget, out.reply, { inboundVoice, reply, phoneId: linked ? linked.waPhoneId : undefined, token: linked ? linkedToken : undefined });
