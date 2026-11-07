@@ -1958,6 +1958,17 @@ async function replyMaybeVoice(to, text, opts) {
   return o.reply(text);
 }
 
+app.get('/api/admin/wa-log', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const all = await require('./lib/suite').docs.list('events');
+    const wa = all.filter((e) => e.channel === 'whatsapp')
+      .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+      .slice(0, Number(req.query.limit) || 15);
+    res.json({ count: wa.length, deliveries: wa });
+  } catch (e) { res.status(500).json({ error: String(e.message).slice(0, 160) }); }
+});
+
 app.get('/webhook/whatsapp', (req, res) => {
   const q = req.query || {};
   if (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] === WA_VERIFY_TOKEN) return res.send(q['hub.challenge'] || '');
@@ -1965,6 +1976,15 @@ app.get('/webhook/whatsapp', (req, res) => {
 });
 
 app.post('/webhook/whatsapp', (req, res) => {
+  try {
+    const v0 = req.body && req.body.entry && req.body.entry[0] && req.body.entry[0].changes && req.body.entry[0].changes[0] && req.body.entry[0].changes[0].value;
+    const m0 = v0 && v0.messages && v0.messages[0];
+    require('./lib/suite').logEvent({
+      channel: 'whatsapp',
+      kind: m0 ? 'wa_in' : 'wa_hit',
+      query: m0 ? String((m0.text && m0.text.body) || m0.type || '').slice(0, 120) : 'no message in payload'
+    });
+  } catch (e) { /* logging must never break delivery */ }
   const appSecret = process.env.WHATSAPP_APP_SECRET || '';
   if (appSecret) {
     const sig = req.get('x-hub-signature-256') || '';
