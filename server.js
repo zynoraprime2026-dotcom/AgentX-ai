@@ -1994,7 +1994,10 @@ app.post('/webhook/whatsapp', async (req, res) => {
     if (!safeEq(sig, want)) return res.status(401).end();
   }
   res.json({ ok: true });
-  handleWa(req).catch(e => console.log('[WA err]', String(e).slice(0, 200)));
+  handleWa(req).catch(e => {
+    console.log('[WA err]', String(e).slice(0, 200));
+    require('./lib/suite').logEvent({ channel: 'whatsapp', kind: 'wa_err', query: 'handler: ' + String(e.message).slice(0, 180) }).catch(() => {});
+  });
 });
 
 async function handleWa(req) {
@@ -2009,7 +2012,21 @@ async function handleWa(req) {
   const linked = agents.find(a => a.waPhoneId && a.waPhoneId === toPhoneId && liveWa(a));
   const linkedToken = linked ? await db.getAgentToken(linked.id) : '';
   const chatTarget = msg.group_id || from;
-  const reply = (t) => waSend(chatTarget, t, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
+  // Every outbound attempt is recorded, success or failure: WhatsApp failures are
+  // otherwise invisible (the API returns a 4xx body nobody reads).
+  const reply = async (t) => {
+    const started = Date.now();
+    try {
+      await waSend(chatTarget, t, linked ? linked.waPhoneId : undefined, linked ? linkedToken : undefined);
+      await require('./lib/suite').logEvent({ channel: 'whatsapp', kind: 'wa_out', query: String(t).slice(0, 120) });
+    } catch (e) {
+      await require('./lib/suite').logEvent({
+        channel: 'whatsapp', kind: 'wa_err',
+        query: (String(t).slice(0, 40) + ' -> ' + String(e.message).slice(0, 150)),
+        latency: Date.now() - started
+      });
+    }
+  };
   let text = '';
   let inboundVoice = false;
   if (msg.type === 'text') {
