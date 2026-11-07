@@ -1122,6 +1122,22 @@ async function runTool(name, args, ctx) {
         await docs.put('triggers', { ...t, active: action === 'resume' });
         return '"' + t.name + '" is now ' + (action === 'resume' ? 'active' : 'paused') + '.';
       }
+      case 'page_status': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const social = require('./lib/social');
+        if (!social.configured()) return 'No Facebook Page token is set yet, so there is nothing to publish to. Tell the owner META_PAGE_TOKEN is missing.';
+        const w = await social.whoami();
+        return 'Connected Page: ' + (w.name || w.pageId) + ' (id ' + w.pageId + ')' + (w.followers ? ', ' + w.followers + ' followers' : '') + '.';
+      }
+      case 'post_to_page': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const social = require('./lib/social');
+        if (!social.configured()) return 'No Facebook Page token is set yet, so nothing can be published. Tell the owner META_PAGE_TOKEN is missing.';
+        const out = args.imageUrl
+          ? await social.postImage({ imageUrl: args.imageUrl, message: args.message })
+          : await social.postText({ message: args.message, link: args.link });
+        return 'Published to the Page: ' + out.url;
+      }
       case 'github_write_file': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         const d = await devtools.writeFile({
@@ -1408,7 +1424,22 @@ const MANAGE_TOOLS = [
       parameters: { type: 'object', properties: { name: { type: 'string' }, action: { type: 'string', enum: ['pause', 'resume'] } }, required: ['name', 'action'] } } }
 ];
 
-const TOOLSETS = { ilm: TOOLS, shop: SHOP_TOOLS, profile: PROFILE_TOOLS, studio: STUDIO_TOOLS, turath: TURATH_TOOLS, web: WEB_TOOLS, dev: DEV_TOOLS, email: EMAIL_TOOLS, manage: MANAGE_TOOLS };
+const SOCIAL_TOOLS = [
+  { type: 'function', function: {
+      name: 'page_status',
+      description: 'Which Facebook Page this workspace can publish to, with its name and follower count. Use it when the owner asks what Page is connected, or before the first post in a conversation.',
+      parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: {
+      name: 'post_to_page',
+      description: 'Publish a post to the connected Facebook Page. The post is public the moment it is published, so read the exact wording back to the owner and only call this after they have approved that wording. Use imageUrl for a picture post and link for a link post, not both.',
+      parameters: { type: 'object', properties: {
+        message: { type: 'string', description: 'The exact text of the post' },
+        imageUrl: { type: 'string', description: 'Optional public image URL for a photo post' },
+        link: { type: 'string', description: 'Optional link for a text post' }
+      }, required: ['message'] } } }
+];
+
+const TOOLSETS = { ilm: TOOLS, shop: SHOP_TOOLS, profile: PROFILE_TOOLS, studio: STUDIO_TOOLS, turath: TURATH_TOOLS, web: WEB_TOOLS, dev: DEV_TOOLS, email: EMAIL_TOOLS, manage: MANAGE_TOOLS, social: SOCIAL_TOOLS };
 
 function inferToolsets(agent) {
   // Name and description only: a helpdesk prompt names every feature, so reading
@@ -1436,7 +1467,7 @@ function toolsFor(agent, ctx) {
   // never write to an address they name or commit to his account. His chat is the one
   // place the number IS the authentication.
   const ownerKeys = keys.slice();
-  for (const extra of ['email', 'dev']) if (!ownerKeys.includes(extra)) ownerKeys.push(extra);
+  for (const extra of ['email', 'dev', 'social']) if (!ownerKeys.includes(extra)) ownerKeys.push(extra);
   return collectTools(ownerKeys);
 }
 
