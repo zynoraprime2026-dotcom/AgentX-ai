@@ -88,6 +88,7 @@ const views = {
   overview: renderOverview, agents: renderAgents, analytics: renderAnalytics,
   conversations: renderConversations,
   reminders: loadReminders, triggers: loadTriggers, channels: () => renderHealth(),
+  connectors: renderConnectors,
   billing: loadBilling, settings: loadHealth
 };
 
@@ -106,6 +107,58 @@ document.addEventListener('click', (e) => {
   const go = e.target.closest('[data-goto]');
   if (go) switchView(go.dataset.goto);
 });
+
+
+// ---------- connectors ----------
+// One screen that answers "what is wired up and what does it let an agent do", with a live
+// test per service instead of a status flag nobody trusts.
+async function renderConnectors(force) {
+  const list = $('#connList');
+  if (list) list.innerHTML = skeletonRows(5);
+  let d;
+  try { d = await api('/connectors' + (force ? '?refresh=1' : '')); }
+  catch (e) { if (list) list.innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
+  const rows = d.connectors || [];
+  const s = d.summary || {};
+  const tiles = $('#connTiles');
+  if (tiles) {
+    tiles.innerHTML = [
+      ['Connected', s.connected || 0, 'answering right now'],
+      ['Needs attention', s.broken || 0, 'configured but failing'],
+      ['Not set up', s.missing || 0, 'no key on the server']
+    ].map(([label, n, hint]) => `<div class="card"><div class="muted">${esc(label)}</div><div class="big">${n}</div><div class="muted small">${esc(hint)}</div></div>`).join('');
+  }
+  if (!list) return;
+  const dot = (st) => st === 'connected' ? '🟢' : st === 'error' ? '🟠' : '⚪';
+  list.innerHTML = rows.map(c => `
+    <div class="card inner" style="margin-bottom:12px">
+      <div class="row-between">
+        <div><b>${dot(c.state)} ${esc(c.name)}</b> <span class="chip">${esc(c.category)}</span>
+          <span class="chip">${c.scope === 'read' ? 'reads' : 'can write'}</span></div>
+        <div class="conv-tools">
+          <span class="muted small">${esc(c.state === 'connected' ? (c.ms ? c.ms + 'ms' : 'live') : c.state === 'error' ? 'failing' : 'not set')}</span>
+          <button class="btn small" data-conn="${esc(c.id)}">Test</button>
+        </div>
+      </div>
+      <div class="muted" style="margin:8px 0 6px">${esc(c.enables)}</div>
+      <div class="muted small">${esc(c.detail || '')}</div>
+      ${c.tools && c.tools.length ? `<div class="chips" style="margin-top:8px">${c.tools.map(t => `<span class="chip">${esc(t)}</span>`).join('')}</div>` : ''}
+      ${c.note ? `<div class="muted small" style="margin-top:8px">${esc(c.note)}</div>` : ''}
+      ${c.missing && c.missing.length ? `<div class="muted small" style="margin-top:8px">Set on the server: <code>${esc(c.missing.join(', '))}</code></div>` : ''}
+    </div>`).join('');
+  $$('[data-conn]').forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = 'Testing…';
+      try {
+        const one = await api('/connectors/' + btn.dataset.conn + '/test', { method: 'POST' });
+        toast(one.name + ': ' + (one.state === 'connected' ? 'connected' : one.detail));
+      } catch (e) { toast(e.message); }
+      renderConnectors(true);
+    };
+  });
+  const refresh = $('#connRefresh');
+  if (refresh) refresh.onclick = () => renderConnectors(true);
+}
 
 // ---------- overview ----------
 function renderOverview() {

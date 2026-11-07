@@ -36,6 +36,7 @@
       <button class="navbtn" data-view="reminders" title="Scheduled messages your agents push">⏰ Reminders</button>
       <button class="navbtn" data-view="triggers" title="Watch an external feed and message when it changes">🔔 Triggers</button>
       <button class="navbtn" data-view="channels" title="WhatsApp and Telegram connections">📡 Channels</button>
+      <button class="navbtn" data-view="connectors" title="GitHub, email, WhatsApp, Ilm and the rest">🔌 Connectors</button>
       <button class="navbtn" data-view="billing" title="Plans and limits">💳 Plan</button>
       <button class="navbtn" data-view="settings" title="Keys and webhooks">⚙️ Settings</button>
     </nav>
@@ -207,6 +208,19 @@
           <button class="btn primary" id="saveAgent">Save agent</button>
         </div>
       </div>
+    </section>
+
+    <!-- CONNECTORS -->
+    <section id="view-connectors" class="view hidden">
+      <div class="row-between">
+        <h1>Connectors</h1>
+        <div class="conv-tools">
+          <button class="btn small" id="connRefresh">Test all</button>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:-6px">Every service an agent can reach, what it enables, and whether it answers right now. Keys live on the server, never in a chat.</p>
+      <div class="cards" id="connTiles"></div>
+      <div id="connList" style="margin-top:18px"></div>
     </section>
 
     <!-- ANALYTICS -->
