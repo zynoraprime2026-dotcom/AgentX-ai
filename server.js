@@ -1301,7 +1301,17 @@ async function runTool(name, args, ctx) {
       }
       default: return 'Unknown tool';
     }
-  } catch (e) { return 'Tool error: ' + e.message; }
+  } catch (e) {
+    // Without this the model just says it could not pull an answer together and the
+    // real cause (a refused IMAP login, a dead API) is invisible from outside.
+    try {
+      await require('./lib/suite').logEvent({
+        ownerId: ctx && ctx.ownerId, channel: 'web', kind: 'tool_error',
+        error: name + ': ' + String((e && e.message) || e).slice(0, 200)
+      });
+    } catch (logErr) { /* diagnostics must never break the reply */ }
+    return 'Tool error: ' + e.message;
+  }
 }
 
 // ---------- Al-Haqq Ops shop tools (read-only) ----------
