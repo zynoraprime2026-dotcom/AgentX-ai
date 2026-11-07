@@ -1975,16 +1975,18 @@ app.get('/webhook/whatsapp', (req, res) => {
   res.status(403).send('verification failed');
 });
 
-app.post('/webhook/whatsapp', (req, res) => {
+app.post('/webhook/whatsapp', async (req, res) => {
   try {
     const v0 = req.body && req.body.entry && req.body.entry[0] && req.body.entry[0].changes && req.body.entry[0].changes[0] && req.body.entry[0].changes[0].value;
     const m0 = v0 && v0.messages && v0.messages[0];
-    require('./lib/suite').logEvent({
+    // awaited: a serverless function freezes the instant it responds, so an
+    // un-awaited write is silently dropped
+    await require('./lib/suite').logEvent({
       channel: 'whatsapp',
       kind: m0 ? 'wa_in' : 'wa_hit',
       query: m0 ? String((m0.text && m0.text.body) || m0.type || '').slice(0, 120) : 'no message in payload'
     });
-  } catch (e) { /* logging must never break delivery */ }
+  } catch (e) { console.log('[wa-log]', String(e.message).slice(0, 150)); }
   const appSecret = process.env.WHATSAPP_APP_SECRET || '';
   if (appSecret) {
     const sig = req.get('x-hub-signature-256') || '';
