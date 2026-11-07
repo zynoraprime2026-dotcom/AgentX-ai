@@ -1868,7 +1868,7 @@ function waHadithBlock(h, collection, number) {
 async function waDailyHadith() {
   const day = Math.floor(Date.now() / 86400000);
   const [collection, number] = DAILY_HADITH[day % DAILY_HADITH.length];
-  const d = await ilmCall('/v1/hadith/' + collection + '/' + number);
+  const d = await ilmCall('/v1/hadith/' + collection + '/' + number, null, { as: 'json' });
   const h = d.hadith || d;
   return '*Hadith of the day*\n\n' + waHadithBlock(h, collection, number) + HADITH_GRACE;
 }
