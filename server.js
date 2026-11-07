@@ -1843,6 +1843,39 @@ function waFmt(text) {
   return t.trim();
 }
 
+// A hadith request must never reach the model's memory: asked for one, the LLM
+// invented "Sahih Bukhari 6027" and quoted Quran 11:115 as Sahih Muslim. This path
+// answers straight from the Ilm database, in Arabic and English, with the real
+// reference, and refuses out loud when the database cannot be read.
+const HADITH_TOPICS = ['patience', 'gratitude', 'mercy', 'charity', 'kindness', 'truthfulness', 'parents', 'anger', 'intention', 'neighbour'];
+function hadithTopicFor(text) {
+  const asked = String(text).match(/hadith(?:\s+(?:about|on|regarding))\s+([^.?!]{2,40})/i);
+  if (asked) return asked[1].trim().replace(/\s+/g, ' ');
+  const englishTopic = String(text).match(/(?:about|on)\s+(patience|gratitude|mercy|charity|kindness|truthfulness|parents|anger|intention|neighbour)/i);
+  if (englishTopic) return englishTopic[1].toLowerCase();
+  const day = Math.floor(Date.now() / 86400000);
+  return HADITH_TOPICS[day % HADITH_TOPICS.length];
+}
+async function waHadithReply(topic) {
+  const d = await ilmCall('/v1/hadith/search', {
+    q: topic, limit: 2,
+    fields: 'narrator,collection,hadith_number,book_name,grade,text_arabic,text_english'
+  }, { as: 'json' });
+  const rows = (d.results || []).filter(r => r && (r.text_english || r.text_arabic));
+  if (!rows.length) return `I found no narration for "${topic}" in my hadith database. Try another word, like patience, mercy or charity.`;
+  const nice = (v) => String(v || '').replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim();
+  const blocks = rows.map((r) => {
+    const ref = [nice(r.collection), r.hadith_number].filter(Boolean).join(' ');
+    const arabic = r.text_arabic ? r.text_arabic.trim() : '';
+    const english = String(r.text_english || '').replace(/\s*Narrated ([^:]{2,60}):\s*/i, 'Narrated $1: ').trim();
+    const meta = [ref && 'Reference: ' + ref, r.book_name && 'Book: ' + r.book_name, r.grade && 'Grade: ' + r.grade].filter(Boolean).join(' · ');
+    return [arabic, english, meta].filter(Boolean).join('\n\n');
+  });
+  return `*Hadith on ${topic}*\n\n` + blocks.join('\n\n———\n\n')
+    + '\n\n_Quoted from the collection through my hadith database._';
+}
+const HADITH_ASK = /(?:daily|today'?s)\s+hadith|hadith\s+of\s+the\s+day|^(?:please\s+)?(?:give|send|show|get|bring)\s+me\s+(?:a|one|another|some)?\s*hadith\b|^hadith\s+(?:about|on)\s+/i;
+
 async function waSend(to, text, phoneId, token) {
   const pid = phoneId || WA_PHONE_ID, tok = token || WA_TOKEN;
   if (!pid || !tok) return; // not configured yet
@@ -2151,6 +2184,17 @@ async function handleWa(req) {
     ownerId: agent.ownerId || null, channel: 'whatsapp', key: String(hkey)
   });
   if (waCmd) return reply(waCmd);
+
+  if (HADITH_ASK.test(String(text).trim())) {
+    const topic = hadithTopicFor(text);
+    try {
+      return await reply(await waHadithReply(topic));
+    } catch (e) {
+      console.log('[wa hadith]', String(e.message).slice(0, 140));
+      await require('./lib/suite').logEvent({ channel: 'whatsapp', kind: 'wa_err', query: 'hadith lookup: ' + String(e.message).slice(0, 150) });
+      return reply('My hadith database is not answering right now, so I will not quote a narration from memory. Try again shortly.');
+    }
+  }
 
   const history = [...(await db.getHistory('whatsapp', hkey)), { role: 'user', content: text }].slice(-8);
   console.log('[WA use]', agent.name, linked ? '(linked number)' : '(shared number)');
