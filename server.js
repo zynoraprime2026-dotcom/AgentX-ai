@@ -1780,7 +1780,13 @@ async function handleTgMessage(msg) {
     const ownerTg = String(process.env.OWNER_TELEGRAM_ID || '').trim();
     const canManage = Boolean(ownerTg) && !isGroup && String(chatId) === ownerTg;
     const ctx = { channel: 'telegram', chatId: String(chatId), isGroup, canManage };
-    const out = await groqAsk(agent, history, ctx);
+    const out = await Promise.race([
+      groqAsk(agent, history, ctx),
+      new Promise((_, rej) => setTimeout(
+        () => rej(Object.assign(new Error('I am taking too long on that one. Send it again in a moment?'), { friendly: true })),
+        40000
+      ))
+    ]);
     if (out.demo) return; // never send demo noise to Telegram
     bumpMessages(agent.id);
     suite.logEvent({ ...tgBase, kind: 'reply', latency: Date.now() - tgStarted, query: String(text).slice(0, 300) });
@@ -1993,11 +1999,14 @@ app.post('/webhook/whatsapp', async (req, res) => {
     const want = 'sha256=' + crypto.createHmac('sha256', appSecret).update(req.rawBody || Buffer.from('')).digest('hex');
     if (!safeEq(sig, want)) return res.status(401).end();
   }
-  res.json({ ok: true });
-  handleWa(req).catch(e => {
+  // Answer first and the platform freezes the function before the reply is sent;
+  // the whole turn is awaited, and Meta retries are absorbed by message-id dedupe.
+  try { await handleWa(req); }
+  catch (e) {
     console.log('[WA err]', String(e).slice(0, 200));
-    require('./lib/suite').logEvent({ channel: 'whatsapp', kind: 'wa_err', query: 'handler: ' + String(e.message).slice(0, 180) }).catch(() => {});
-  });
+    try { await require('./lib/suite').logEvent({ channel: 'whatsapp', kind: 'wa_err', query: 'handler: ' + String(e.message).slice(0, 180) }); } catch (_) {}
+  }
+  if (!res.headersSent) res.json({ ok: true });
 });
 
 async function handleWa(req) {
