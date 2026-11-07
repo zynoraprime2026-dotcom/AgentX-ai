@@ -2101,6 +2101,32 @@ async function replyMaybeVoice(to, text, opts) {
 
 // Finds the owner's Telegram chat id: the history table keys rows by chat_id, so
 // the first private chat that has ever messaged the bot shows up here.
+// Is Page publishing wired? Shows only whether a token exists, never the token, plus
+// what Meta answers when it is used. The fastest way to tell a missing env var from a
+// token that simply cannot see a Page.
+app.get('/api/admin/social', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const social = require('./lib/social');
+    const has = Boolean(process.env.META_PAGE_TOKEN);
+    const out = { tokenSet: has, tokenLength: has ? process.env.META_PAGE_TOKEN.length : 0, pageIdSet: Boolean(process.env.META_PAGE_ID) };
+    if (has) {
+      try { out.pages = await social.listPages(); }
+      catch (e) { out.error = String(e && e.message || e).slice(0, 300); }
+      try {
+        const me = await fetch('https://graph.facebook.com/v21.0/me?fields=id,name&access_token=' + encodeURIComponent(process.env.META_PAGE_TOKEN), { signal: AbortSignal.timeout(12000) });
+        out.tokenOwner = await me.json();
+      } catch (e) { out.ownerError = String(e && e.message || e).slice(0, 200); }
+      try {
+        const dbg = await fetch('https://graph.facebook.com/v21.0/debug_token?input_token=' + encodeURIComponent(process.env.META_PAGE_TOKEN) + '&access_token=' + encodeURIComponent(process.env.META_PAGE_TOKEN), { signal: AbortSignal.timeout(12000) });
+        const d = await dbg.json();
+        out.debug = d && d.data ? { type: d.data.type, app_id: d.data.app_id, valid: d.data.is_valid, scopes: d.data.scopes, expires: d.data.expires_at } : d;
+      } catch (e) { out.debugError = String(e && e.message || e).slice(0, 200); }
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: String(e && e.message || e).slice(0, 200) }); }
+});
+
 app.get('/api/admin/tg-log', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
