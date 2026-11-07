@@ -110,9 +110,9 @@ async function loadSession(req) {
 
 api.use(async (req, res, next) => {
   if (PUBLIC_API.includes(req.path)) return next();
-  if (req.path.startsWith('/admin/')) {
-    // Admin paths are guarded by the x-admin-key header or a founder session, so
-    // attach the session user when there is one but never reject here.
+  if (req.path.startsWith('/admin/') || req.path.startsWith('/connectors')) {
+    // Admin and connector paths are guarded by the x-admin-key header or a founder
+    // session, so attach the session user when there is one but never reject here.
     const [, adminSess] = await loadSession(req);
     if (adminSess && new Date(adminSess.expires) >= new Date()) req.user = adminSess.user;
     return next();
