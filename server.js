@@ -2226,6 +2226,10 @@ api.get('/admin/inbox', async (req, res) => {
   const inbox = require('./lib/inbox');
   if (!inbox.configured()) return res.status(409).json({ error: 'inbox not set', hint: 'add GMAIL_USER and GMAIL_APP_PASSWORD' });
   try {
+    if (req.query.read) {
+      const one = await inbox.readOne(req.query.read);
+      return res.json({ account: inbox.cfg().user, message: one });
+    }
     const rows = await inbox.recent(Math.min(Number(req.query.limit) || 10, 25));
     res.json({ account: inbox.cfg().user, count: rows.length, unread: rows.filter((r) => r.unread).length, messages: rows });
   } catch (e) {
