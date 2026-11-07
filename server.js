@@ -1770,7 +1770,7 @@ async function handleTgMessage(msg) {
     const allowed = suite.shouldAnswerGroup({ isGroup: true, mode: agent.groupReply, text, botNames: [agent.name], replyToBot: replyToBot || mentioned });
     if (!allowed) return; // group etiquette: only answer when addressed
   }
-  const tgBase = { ownerId: agent.ownerId, agentId: agent.id, agentName: agent.name, channel: 'telegram' };
+  const tgBase = { ownerId: agent.ownerId, agentId: agent.id, agentName: agent.name, channel: 'telegram', chatId: String(chatId) };
   const tgStarted = Date.now();
   suite.logEvent({ ...tgBase, kind: 'message', query: String(text).slice(0, 300) });
   try {
@@ -2053,7 +2053,8 @@ app.get('/api/admin/wa-log', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
     const all = await require('./lib/suite').docs.list('events');
-    const wa = all.filter((e) => e.channel === 'whatsapp')
+    const want = String(req.query.channel || 'whatsapp');
+    const wa = all.filter((e) => e.channel === want)
       .sort((a, b) => String(b.at).localeCompare(String(a.at)))
       .slice(0, Number(req.query.limit) || 15);
     res.json({ count: wa.length, deliveries: wa });
