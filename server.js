@@ -1991,6 +1991,26 @@ app.get('/api/admin/wa-log', async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e.message).slice(0, 160) }); }
 });
 
+app.get('/api/admin/ilm-check', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const key = await getIlmKey();
+  const out = { base: ILM_API_URL, keyPresent: Boolean(key), keyLen: key ? key.length : 0 };
+  try {
+    const d = await ilmCall('/v1/hadith/search', {
+      q: req.query.q || 'patience', limit: 1,
+      fields: 'collection,hadith_number,text_arabic,text_english,grade'
+    }, { as: 'json' });
+    const r = (d.results || [])[0] || {};
+    out.ok = true;
+    out.sample = {
+      collection: r.collection, number: r.hadith_number,
+      hasArabic: Boolean(r.text_arabic), hasEnglish: Boolean(r.text_english),
+      english: String(r.text_english || '').slice(0, 100)
+    };
+  } catch (e) { out.ok = false; out.error = String(e.message).slice(0, 200); }
+  res.json(out);
+});
+
 app.get('/webhook/whatsapp', (req, res) => {
   const q = req.query || {};
   if (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] === WA_VERIFY_TOKEN) return res.send(q['hub.challenge'] || '');
