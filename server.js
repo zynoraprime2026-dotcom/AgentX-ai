@@ -1847,32 +1847,52 @@ function waFmt(text) {
 // invented "Sahih Bukhari 6027" and quoted Quran 11:115 as Sahih Muslim. This path
 // answers straight from the Ilm database, in Arabic and English, with the real
 // reference, and refuses out loud when the database cannot be read.
-const HADITH_TOPICS = ['patience', 'gratitude', 'mercy', 'charity', 'kindness', 'truthfulness', 'parents', 'anger', 'intention', 'neighbour'];
+// References below were each fetched and read before being added, so the daily
+// rotation always shows a narration whose wording is in the collection.
+const DAILY_HADITH = [
+  ['bukhari', 13], ['bukhari', 6011], ['bukhari', 5353], ['bukhari', 6114],
+  ['bukhari', 6464], ['bukhari', 6502], ['tirmidhi', 1924], ['tirmidhi', 1987], ['tirmidhi', 2517]
+];
+const HADITH_GRACE = '\n\n_Sent from my hadith database, verbatim._';
+const niceName = (v) => String(v || '').replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+
+function waHadithBlock(h, collection, number) {
+  const ref = [niceName(collection || h.collection_name), h.hadith_number || number].filter(Boolean).join(' ');
+  const arabic = String(h.text_arabic || '').trim();
+  const english = String(h.text_english || '').replace(/\s*Narrated ([^:]{2,60}):\s*/i, 'Narrated $1: ').trim();
+  const meta = ['Reference: ' + ref, h.book_name ? 'Book: ' + h.book_name : '', h.grade ? 'Grade: ' + h.grade : '']
+    .filter(Boolean).join(' · ');
+  return [arabic, english, meta].filter(Boolean).join('\n\n');
+}
+
+async function waDailyHadith() {
+  const day = Math.floor(Date.now() / 86400000);
+  const [collection, number] = DAILY_HADITH[day % DAILY_HADITH.length];
+  const d = await ilmCall('/v1/hadith/' + collection + '/' + number);
+  const h = d.hadith || d;
+  return '*Hadith of the day*\n\n' + waHadithBlock(h, collection, number) + HADITH_GRACE;
+}
+
+async function waHadithByTopic(topic) {
+  const d = await ilmCall('/v1/hadith/search', {
+    q: topic, limit: 6,
+    fields: 'narrator,collection,hadith_number,book_name,grade,text_arabic,text_english'
+  }, { as: 'json' });
+  // Keyword search returns weak matches; keep only complete bilingual records so a
+  // half-translated row is never what gets quoted back.
+  const rows = (d.results || []).filter((r) => r && r.text_arabic
+    && String(r.text_english || '').trim().length >= 60);
+  if (!rows.length) {
+    return 'I found no complete narration for "' + topic + '" in my hadith database. Try another word, like patience, mercy or charity.';
+  }
+  const blocks = rows.slice(0, 2).map((r) => waHadithBlock(r, r.collection, r.hadith_number));
+  return '*Hadith on ' + topic + '*\n\n' + blocks.join('\n\n———\n\n') + HADITH_GRACE;
+}
+
 function hadithTopicFor(text) {
   const asked = String(text).match(/hadith(?:\s+(?:about|on|regarding))\s+([^.?!]{2,40})/i);
   if (asked) return asked[1].trim().replace(/\s+/g, ' ');
-  const englishTopic = String(text).match(/(?:about|on)\s+(patience|gratitude|mercy|charity|kindness|truthfulness|parents|anger|intention|neighbour)/i);
-  if (englishTopic) return englishTopic[1].toLowerCase();
-  const day = Math.floor(Date.now() / 86400000);
-  return HADITH_TOPICS[day % HADITH_TOPICS.length];
-}
-async function waHadithReply(topic) {
-  const d = await ilmCall('/v1/hadith/search', {
-    q: topic, limit: 2,
-    fields: 'narrator,collection,hadith_number,book_name,grade,text_arabic,text_english'
-  }, { as: 'json' });
-  const rows = (d.results || []).filter(r => r && (r.text_english || r.text_arabic));
-  if (!rows.length) return `I found no narration for "${topic}" in my hadith database. Try another word, like patience, mercy or charity.`;
-  const nice = (v) => String(v || '').replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim();
-  const blocks = rows.map((r) => {
-    const ref = [nice(r.collection), r.hadith_number].filter(Boolean).join(' ');
-    const arabic = r.text_arabic ? r.text_arabic.trim() : '';
-    const english = String(r.text_english || '').replace(/\s*Narrated ([^:]{2,60}):\s*/i, 'Narrated $1: ').trim();
-    const meta = [ref && 'Reference: ' + ref, r.book_name && 'Book: ' + r.book_name, r.grade && 'Grade: ' + r.grade].filter(Boolean).join(' · ');
-    return [arabic, english, meta].filter(Boolean).join('\n\n');
-  });
-  return `*Hadith on ${topic}*\n\n` + blocks.join('\n\n———\n\n')
-    + '\n\n_Quoted from the collection through my hadith database._';
+  return '';
 }
 const HADITH_ASK = /(?:daily|today'?s)\s+hadith|hadith\s+of\s+the\s+day|^(?:please\s+)?(?:give|send|show|get|bring)\s+me\s+(?:a|one|another|some)?\s*hadith\b|^hadith\s+(?:about|on)\s+/i;
 
@@ -2188,7 +2208,7 @@ async function handleWa(req) {
   if (HADITH_ASK.test(String(text).trim())) {
     const topic = hadithTopicFor(text);
     try {
-      return await reply(await waHadithReply(topic));
+      return await reply(topic ? await waHadithByTopic(topic) : await waDailyHadith());
     } catch (e) {
       console.log('[wa hadith]', String(e.message).slice(0, 140));
       await require('./lib/suite').logEvent({ channel: 'whatsapp', kind: 'wa_err', query: 'hadith lookup: ' + String(e.message).slice(0, 150) });
