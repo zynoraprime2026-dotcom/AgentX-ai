@@ -467,12 +467,15 @@ api.get('/usage/tools', async (req, res) => {
 // The dashboard listed connection flags in three different places and there was no single
 // answer to "what is connected, and what does it let an agent do". This is that answer.
 api.get('/connectors', async (req, res) => {
+  const byKey = !(req.user && req.user.founder) && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
+  if (!(req.user && req.user.founder) && !byKey) return res.status(403).json({ error: 'connectors are managed by the founder' });
   const out = await connectors.connectorStatus({ force: String(req.query.refresh || '') === '1' });
   res.json(out);
 });
 
 api.post('/connectors/:id/test', async (req, res) => {
-  if (!req.user.founder) return res.status(403).json({ error: 'connectors are managed by the founder' });
+  const byKey = !(req.user && req.user.founder) && req.headers['x-admin-key'] === process.env.ADMIN_KEY;
+  if (!(req.user && req.user.founder) && !byKey) return res.status(403).json({ error: 'connectors are managed by the founder' });
   const out = await connectors.connectorStatus({ force: true });
   const one = (out.connectors || []).find((c) => c.id === req.params.id);
   if (!one) return res.status(404).json({ error: 'unknown connector' });
