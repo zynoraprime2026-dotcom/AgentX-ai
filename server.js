@@ -1143,6 +1143,23 @@ async function runTool(name, args, ctx) {
           : await social.postText({ page: args.page, message: args.message, link: args.link });
         return 'Published to ' + out.page + ': ' + out.url;
       }
+      case 'instagram_status': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const ig = require('./lib/instagram');
+        ig.setToken(await getPageToken());
+        try {
+          const list = await ig.accounts();
+          if (!list.length) return 'No Instagram account is linked to these Pages yet (or instagram_basic is missing from the token).';
+          return 'Instagram: ' + list.map(a => '@' + a.username + ' via ' + a.page).join('; ') + '.';
+        } catch (e) { return 'Instagram lookup failed: ' + String(e.message || e).slice(0, 180); }
+      }
+      case 'post_to_instagram': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const ig = require('./lib/instagram');
+        ig.setToken(await getPageToken());
+        const out = await ig.publish({ account: args.account, imageUrl: args.imageUrl, caption: args.caption });
+        return 'Published to ' + out.account + (out.permalink ? ': ' + out.permalink : '');
+      }
       case 'github_write_file': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         const d = await devtools.writeFile({
@@ -1430,6 +1447,19 @@ const MANAGE_TOOLS = [
 ];
 
 const SOCIAL_TOOLS = [
+  { type: 'function', function: {
+      name: 'instagram_status',
+      description: 'Which Instagram business account is linked to the Pages this workspace manages, and its username. Use it before the first Instagram post or when the owner asks what is connected.',
+      parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: {
+      name: 'post_to_instagram',
+      description: 'Publish a photo post to the linked Instagram account. Instagram needs a public web address for the image, so pass imageUrl only after the picture exists somewhere public. The post is live immediately, so read the caption and account back to the owner and only call this after they approve that wording.',
+      parameters: { type: 'object', properties: {
+        account: { type: 'string', description: 'Instagram username, with or without @, when more than one account is linked' },
+        imageUrl: { type: 'string', description: 'Public JPEG URL of the photo' },
+        caption: { type: 'string', description: 'The exact caption, including hashtags' }
+      }, required: ['imageUrl', 'caption'] } } },
+
   { type: 'function', function: {
       name: 'page_status',
       description: 'Which Facebook Page this workspace can publish to, with its name and follower count. Use it when the owner asks what Page is connected, or before the first post in a conversation.',
@@ -2208,6 +2238,25 @@ app.post('/api/admin/social-token', async (req, res) => {
     await rememberPageToken(tok, pages);
     res.json({ saved: true, scopes: d.scopes || [], expires: d.expires_at || 0, pages: pages.map((p) => ({ id: p.id, name: p.name, followers: p.followers })) });
   } catch (e) { res.status(500).json({ error: String(e && e.message || e).slice(0, 200) }); }
+});
+
+// Instagram, same admin key as the rest. POST publishes; GET reports what is linked.
+app.all('/api/admin/instagram', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const ig = require('./lib/instagram');
+  ig.setToken(await getPageToken());
+  try {
+    if (req.method === 'GET') {
+      const accounts = await ig.accounts();
+      return res.json({ accounts });
+    }
+    const body = req.body || {};
+    if (!body.imageUrl || !body.caption) return res.status(400).json({ error: 'imageUrl and caption are required' });
+    const out = await ig.publish({ account: body.account, imageUrl: body.imageUrl, caption: body.caption });
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: String(e && e.message || e).slice(0, 300) });
+  }
 });
 
 app.get('/api/admin/social', async (req, res) => {
