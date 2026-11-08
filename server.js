@@ -1147,6 +1147,7 @@ async function runTool(name, args, ctx) {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         const ig = require('./lib/instagram');
         ig.setToken(await getPageToken());
+        try { ig.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
         try {
           const list = await ig.accounts();
           if (!list.length) return 'No Instagram account is linked to these Pages yet (or instagram_basic is missing from the token).';
@@ -1157,6 +1158,7 @@ async function runTool(name, args, ctx) {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         const ig = require('./lib/instagram');
         ig.setToken(await getPageToken());
+        try { ig.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
         const out = await ig.publish({ account: args.account, imageUrl: args.imageUrl, caption: args.caption });
         return 'Published to ' + out.account + (out.permalink ? ': ' + out.permalink : '');
       }
@@ -2241,10 +2243,27 @@ app.post('/api/admin/social-token', async (req, res) => {
 });
 
 // Instagram, same admin key as the rest. POST publishes; GET reports what is linked.
+// Instagram needs extra scopes, which the Facebook Page token may not carry. Keep its
+// token separate so a short-lived Instagram-capable one cannot break Page posting.
+app.post('/api/admin/instagram-token', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const tok = String((req.body && req.body.token) || '').trim();
+  if (tok.length < 40) return res.status(400).json({ error: 'that does not look like an access token' });
+  try {
+    await db.putSocial('meta_ig_token', tok);
+    const ig = require('./lib/instagram');
+    ig.setIgToken(tok);
+    let accounts = [];
+    try { accounts = await ig.accounts(); } catch (e) { return res.json({ saved: true, accounts: [], error: String(e.message).slice(0, 200) }); }
+    res.json({ saved: true, accounts });
+  } catch (e) { res.status(500).json({ error: String(e && e.message || e).slice(0, 200) }); }
+});
+
 app.all('/api/admin/instagram', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   const ig = require('./lib/instagram');
   ig.setToken(await getPageToken());
+  try { ig.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
   try {
     if (req.method === 'GET') {
       const accounts = await ig.accounts();
