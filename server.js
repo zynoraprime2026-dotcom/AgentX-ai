@@ -2659,10 +2659,11 @@ api.get('/cron/daily-post', async (req, res) => {
     deps.instagram.setToken(pgTok);
     try { deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
     if (want === 'preview' || want === '1' || want === 'true') {
-      const out = await daily.run({ ...deps, dry: true, generateImage: (prompt) => deps.studio('/v1/image/generate', { prompt, width: 1024, height: 1280 }).then((j) => j && j.url) });
+      const slotQ = String(req.query.slot || '') || undefined;
+      const out = await daily.run({ ...deps, slot: slotQ, dry: true, generateImage: (prompt) => deps.studio('/v1/image/generate', { prompt, width: 1024, height: 1280 }).then((j) => j && j.url) });
       return res.json({ ok: true, ...out });
     }
-    const out = await daily.run(deps);
+    const out = await daily.run({ ...deps, slot: String(req.query.slot || '') || undefined });
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
@@ -2677,6 +2678,7 @@ api.all('/admin/daily-post', async (req, res) => {
     deps.instagram.setToken(pgTok);
     try { deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
     const opts = { ...deps, dry, force: String(q.force) === '1' };
+    if (q.slot === 'morning' || q.slot === 'evening') opts.slot = q.slot;
     if (q.index !== undefined && q.index !== '') opts.index = parseInt(q.index, 10) || 0;
     if (q.date) opts.date = q.date;
     opts.generateImage = (prompt) => deps.studio('/v1/image/generate', { prompt, width: 1024, height: 1280 }).then((j) => j && j.url);
