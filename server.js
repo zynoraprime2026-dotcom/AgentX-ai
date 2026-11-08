@@ -86,7 +86,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 const keepAlive = { on: false, url: '', everyMinutes: 10 };
@@ -2649,6 +2649,27 @@ async function dailyDeps() {
     igAccount: process.env.DAILY_IG_ACCOUNT || 'the_salafi_dawah'
   };
 }
+// Instagram rides a 60-day user token. With the app secret on the server it can be
+// extended in place, so the account never lapses and nobody has to renew by hand.
+const META_APP_ID = process.env.META_APP_ID || '1148977434266000';
+api.get('/cron/ig-refresh', async (req, res) => {
+  if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
+  const secret = process.env.META_APP_SECRET;
+  if (!secret) return res.json({ ok: false, skipped: 'META_APP_SECRET is not set on this deployment' });
+  const cur = await db.getSocial('meta_ig_token').catch(() => null);
+  if (!cur) return res.json({ ok: false, skipped: 'no instagram token stored' });
+  try {
+    const dbg = await fetch('https://graph.facebook.com/v21.0/debug_token?input_token=' + encodeURIComponent(cur) + '&access_token=' + encodeURIComponent(META_APP_ID + '|' + secret)).then((r) => r.json());
+    const exp = dbg && dbg.data && dbg.data.expires_at ? dbg.data.expires_at * 1000 : 0;
+    const days = exp ? Math.round((exp - Date.now()) / 86400000) : null;
+    if (days !== null && days > 30) return res.json({ ok: true, skipped: 'still ' + days + ' days left', daysLeft: days });
+    const url = 'https://graph.facebook.com/v21.0/oauth/access_token?grant_type=fb_exchange_token&client_id=' + encodeURIComponent(META_APP_ID) + '&client_secret=' + encodeURIComponent(secret) + '&fb_exchange_token=' + encodeURIComponent(cur);
+    const out = await fetch(url).then((r) => r.json());
+    if (!out.access_token) return res.status(502).json({ ok: false, error: JSON.stringify(out).slice(0, 200), daysLeft: days });
+    await db.putSocial('meta_ig_token', out.access_token);
+    return res.json({ ok: true, refreshed: true, previousDaysLeft: days, expiresIn: out.expires_in });
+  } catch (e) { return res.status(500).json({ ok: false, error: String(e.message).slice(0, 200) }); }
+});
 api.get('/cron/daily-post', async (req, res) => {
   if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
   const want = String(req.query.status || req.query.dry || '');
