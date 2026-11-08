@@ -2217,7 +2217,12 @@ app.get('/api/admin/social', async (req, res) => {
     const tok = await getPageToken();
     social.setToken(tok);
     const has = Boolean(tok);
-    const out = { tokenSet: has, tokenLength: has ? tok.length : 0, tokenSource: process.env.META_PAGE_TOKEN ? 'env' : (has ? 'stored setting' : 'none'), pageIdSet: Boolean(process.env.META_PAGE_ID) };
+    const out = { tokenSet: has, tokenLength: has ? tok.length : 0, tokenSource: process.env.META_PAGE_TOKEN ? 'env' : (has ? 'stored' : 'none'), pageIdSet: Boolean(process.env.META_PAGE_ID) };
+    try {
+      const stored = await db.getSocial('meta_page_token');
+      out.storedTokenLength = stored ? stored.length : 0;
+      out.dbConnected = Boolean(require('./db').poolRef);
+    } catch (e) { out.storeError = String(e && e.message || e).slice(0, 160); }
     if (has) {
       try { out.pages = await social.listPages(); }
       catch (e) { out.error = String(e && e.message || e).slice(0, 300); }
