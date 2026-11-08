@@ -86,7 +86,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 const keepAlive = { on: false, url: '', everyMinutes: 10 };
@@ -2635,6 +2635,55 @@ api.post('/cron/tick', runTick);
 
 // Vercel cron (or any external scheduler) pings this GET daily before dawn.
 // Guarded by CRON_SECRET (falls back to BROADCAST_TOKEN so either can be used).
+// Daily dawah post: one ayah, one image, to the Page and Instagram. The ayah comes
+// from ilm-api, the image from studio-api, and the day is claimed before publishing so
+// a retried cron cannot double-post.
+const daily = require('./lib/daily');
+async function dailyDeps() {
+  return {
+    ilm: (p) => ilmCall(p, null, { as: 'json' }),
+    studio: async (p, body) => JSON.parse(await studioCall(p, body)),
+    social: require('./lib/social'),
+    instagram: require('./lib/instagram'),
+    page: process.env.DAILY_FB_PAGE || "The salafi Da'wah",
+    igAccount: process.env.DAILY_IG_ACCOUNT || 'the_salafi_dawah'
+  };
+}
+api.get('/cron/daily-post', async (req, res) => {
+  if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
+  const want = String(req.query.status || req.query.dry || '');
+  try {
+    const deps = await dailyDeps();
+    const pgTok = await getPageToken();
+    deps.social.setToken(pgTok);
+    deps.instagram.setToken(pgTok);
+    try { deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
+    if (want === 'preview' || want === '1' || want === 'true') {
+      const out = await daily.run({ ...deps, dry: true, generateImage: (prompt) => deps.studio('/v1/image/generate', { prompt, width: 1024, height: 1280 }).then((j) => j && j.url) });
+      return res.json({ ok: true, ...out });
+    }
+    const out = await daily.run(deps);
+    return res.json({ ok: out.ok !== false, ...out });
+  } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
+});
+api.all('/admin/daily-post', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const q = { ...(req.query || {}), ...(req.body || {}) };
+  const dry = String(q.dry === undefined ? '1' : q.dry) !== '0' && String(q.dry) !== 'false';
+  try {
+    const deps = await dailyDeps();
+    const pgTok = await getPageToken();
+    deps.social.setToken(pgTok);
+    deps.instagram.setToken(pgTok);
+    try { deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
+    const opts = { ...deps, dry, force: String(q.force) === '1' };
+    if (q.index !== undefined && q.index !== '') opts.index = parseInt(q.index, 10) || 0;
+    if (q.date) opts.date = q.date;
+    opts.generateImage = (prompt) => deps.studio('/v1/image/generate', { prompt, width: 1024, height: 1280 }).then((j) => j && j.url);
+    const out = await daily.run(opts);
+    return res.json(out);
+  } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
+});
 api.get('/cron/fajr', async (req, res) => {
   if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized: set CRON_SECRET and send it as a Bearer token' });
   const results = await sendFajrBroadcast();
