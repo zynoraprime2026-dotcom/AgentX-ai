@@ -278,6 +278,27 @@ const store = {
     writeJson(path.join(DATA_DIR, 'settings.json'), s);
   },
 
+  // ---------- Social tokens ----------
+  // A key/value table of its own: agx_settings has fixed columns, so anything new
+  // would otherwise be silently dropped on write.
+  async getSocial(key) {
+    if (!pool) return readJson(path.join(DATA_DIR, 'social.json'), {})[key] || '';
+    await pool.query('CREATE TABLE IF NOT EXISTS agx_social (key text primary key, value text, updated timestamptz default now())');
+    const r = await pool.query('SELECT value FROM agx_social WHERE key=$1', [key]);
+    return (r.rows[0] && r.rows[0].value) || '';
+  },
+  async putSocial(key, value) {
+    if (!pool) {
+      const f = path.join(DATA_DIR, 'social.json');
+      const s = readJson(f, {});
+      s[key] = value;
+      writeJson(f, s);
+      return;
+    }
+    await pool.query('CREATE TABLE IF NOT EXISTS agx_social (key text primary key, value text, updated timestamptz default now())');
+    await pool.query('INSERT INTO agx_social (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2, updated=now()', [key, value]);
+  },
+
   // ---------- Fajr subscribers ----------
   async listSubscribers() {
     if (pool) {

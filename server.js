@@ -2128,24 +2128,24 @@ app.get('/api/fb/login', (req, res) => {
 // Saved as a setting so it survives a redeploy; the env var still wins when set.
 async function getPageToken() {
   if (process.env.META_PAGE_TOKEN) return process.env.META_PAGE_TOKEN;
-  try { return (await db.getSettings()).metaPageToken || ''; } catch (e) { return ''; }
+  try { return (await db.getSocial('meta_page_token')) || ''; } catch (e) { return ''; }
 }
 async function rememberPageToken(token, pages) {
   process.env.META_PAGE_TOKEN = token;
   const map = {};
   for (const p of (pages || [])) if (p && p.id && p.token) map[p.id] = p.token;
   try {
-    const s = await db.getSettings();
-    const merged = { ...(JSON.parse(s.metaPageTokens || '{}')), ...map };
-    await db.putSettings({ ...s, metaPageToken: token, metaPageTokens: JSON.stringify(merged) });
+    const prev = await db.getSocial('meta_page_tokens');
+    const merged = { ...(JSON.parse(prev || '{}')), ...map };
+    await db.putSocial('meta_page_token', token);
+    await db.putSocial('meta_page_tokens', JSON.stringify(merged));
     require('./lib/social').setPageTokens(merged);
   } catch (e) { console.log('[fb token]', String(e && e.message || e).slice(0, 120)); }
 }
 
 async function getPageTokens(ids) {
   try {
-    const s = await db.getSettings();
-    const all = JSON.parse(s.metaPageTokens || '{}');
+    const all = JSON.parse((await db.getSocial('meta_page_tokens')) || '{}');
     const out = {};
     for (const id of (ids || [])) if (all[id]) out[id] = all[id];
     return out;
