@@ -2175,6 +2175,24 @@ app.get('/api/fb/callback', async (req, res) => {
   }
 });
 
+// Install a token without a redeploy: the value is stored in settings and picked up
+// by getPageToken on the next request.
+app.post('/api/admin/social-token', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const tok = String((req.body && req.body.token) || req.query.token || '').trim();
+  if (tok.length < 40) return res.status(400).json({ error: 'that does not look like an access token' });
+  try {
+    await rememberPageToken(tok);
+    const social = require('./lib/social');
+    social.setToken(tok);
+    const dbg = await fetch('https://graph.facebook.com/v21.0/debug_token?input_token=' + encodeURIComponent(tok) + '&access_token=' + encodeURIComponent(tok), { signal: AbortSignal.timeout(12000) });
+    const d = (await dbg.json().catch(() => ({}))).data || {};
+    let pages = [];
+    try { pages = (await social.listPages()).map((p) => ({ id: p.id, name: p.name })); } catch (e) { pages = String(e.message).slice(0, 160); }
+    res.json({ saved: true, scopes: d.scopes || [], expires: d.expires_at || 0, pages });
+  } catch (e) { res.status(500).json({ error: String(e && e.message || e).slice(0, 200) }); }
+});
+
 app.get('/api/admin/social', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
