@@ -1127,6 +1127,7 @@ async function runTool(name, args, ctx) {
         const social = require('./lib/social');
         social.setToken(await getPageToken());
         if (!social.configured()) return 'No Facebook Page token is set yet, so there is nothing to publish to. Tell the owner META_PAGE_TOKEN is missing.';
+        social.setPageTokens(await getPageTokens(['1226430293877510','108861494336428','100103581942138']));
         const w = await social.whoami();
         if (!w.pages.length) return 'The token reaches no Pages — check the System User has Page assets assigned.';
         return 'Connected Pages: ' + w.pages.map(p => p.name + ' (id ' + p.id + (p.followers ? ', ' + p.followers + ' followers' : '') + ')').join('; ') + '.';
@@ -1136,6 +1137,7 @@ async function runTool(name, args, ctx) {
         const social = require('./lib/social');
         social.setToken(await getPageToken());
         if (!social.configured()) return 'No Facebook Page token is set yet, so nothing can be published. Tell the owner META_PAGE_TOKEN is missing.';
+        social.setPageTokens(await getPageTokens(['1226430293877510','108861494336428','100103581942138']));
         const out = args.imageUrl
           ? await social.postImage({ page: args.page, imageUrl: args.imageUrl, message: args.message })
           : await social.postText({ page: args.page, message: args.message, link: args.link });
@@ -2128,12 +2130,26 @@ async function getPageToken() {
   if (process.env.META_PAGE_TOKEN) return process.env.META_PAGE_TOKEN;
   try { return (await db.getSettings()).metaPageToken || ''; } catch (e) { return ''; }
 }
-async function rememberPageToken(token) {
+async function rememberPageToken(token, pages) {
   process.env.META_PAGE_TOKEN = token;
+  const map = {};
+  for (const p of (pages || [])) if (p && p.id && p.token) map[p.id] = p.token;
   try {
     const s = await db.getSettings();
-    await db.putSettings({ ...s, metaPageToken: token });
+    const merged = { ...(JSON.parse(s.metaPageTokens || '{}')), ...map };
+    await db.putSettings({ ...s, metaPageToken: token, metaPageTokens: JSON.stringify(merged) });
+    require('./lib/social').setPageTokens(merged);
   } catch (e) { console.log('[fb token]', String(e && e.message || e).slice(0, 120)); }
+}
+
+async function getPageTokens(ids) {
+  try {
+    const s = await db.getSettings();
+    const all = JSON.parse(s.metaPageTokens || '{}');
+    const out = {};
+    for (const id of (ids || [])) if (all[id]) out[id] = all[id];
+    return out;
+  } catch (e) { return {}; }
 }
 
 app.get('/api/fb/callback', async (req, res) => {
@@ -2188,8 +2204,9 @@ app.post('/api/admin/social-token', async (req, res) => {
     const dbg = await fetch('https://graph.facebook.com/v21.0/debug_token?input_token=' + encodeURIComponent(tok) + '&access_token=' + encodeURIComponent(tok), { signal: AbortSignal.timeout(12000) });
     const d = (await dbg.json().catch(() => ({}))).data || {};
     let pages = [];
-    try { pages = (await social.listPages()).map((p) => ({ id: p.id, name: p.name })); } catch (e) { pages = String(e.message).slice(0, 160); }
-    res.json({ saved: true, scopes: d.scopes || [], expires: d.expires_at || 0, pages });
+    try { pages = await social.listPages(); } catch (e) { return res.json({ saved: true, scopes: d.scopes || [], expires: d.expires_at || 0, pages: [], error: String(e.message).slice(0, 160) }); }
+    await rememberPageToken(tok, pages);
+    res.json({ saved: true, scopes: d.scopes || [], expires: d.expires_at || 0, pages: pages.map((p) => ({ id: p.id, name: p.name, followers: p.followers })) });
   } catch (e) { res.status(500).json({ error: String(e && e.message || e).slice(0, 200) }); }
 });
 
