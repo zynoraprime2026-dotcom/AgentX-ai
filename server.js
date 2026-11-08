@@ -2223,6 +2223,15 @@ app.get('/api/admin/social', async (req, res) => {
       out.storedTokenLength = stored ? stored.length : 0;
       out.dbConnected = Boolean(require('./db').poolRef);
     } catch (e) { out.storeError = String(e && e.message || e).slice(0, 160); }
+    if (has && req.query.page) {
+      // Reachability probe for one Page id: works only when the asset is really
+      // assigned to this system user.
+      try {
+        const pr = await fetch('https://graph.facebook.com/v21.0/' + encodeURIComponent(String(req.query.page)) + '?fields=id,name,access_token&access_token=' + encodeURIComponent(tok), { signal: AbortSignal.timeout(12000) });
+        const pd = await pr.json();
+        out.probe = pd.error ? { error: pd.error.message } : { name: pd.name, hasPageToken: Boolean(pd.access_token) };
+      } catch (e) { out.probe = { error: String(e && e.message || e).slice(0, 160) }; }
+    }
     if (has) {
       try { out.pages = await social.listPages(); }
       catch (e) { out.error = String(e && e.message || e).slice(0, 300); }
