@@ -1125,6 +1125,7 @@ async function runTool(name, args, ctx) {
       case 'page_status': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         const social = require('./lib/social');
+        social.setToken(await getPageToken());
         if (!social.configured()) return 'No Facebook Page token is set yet, so there is nothing to publish to. Tell the owner META_PAGE_TOKEN is missing.';
         const w = await social.whoami();
         if (!w.pages.length) return 'The token reaches no Pages — check the System User has Page assets assigned.';
@@ -1133,6 +1134,7 @@ async function runTool(name, args, ctx) {
       case 'post_to_page': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         const social = require('./lib/social');
+        social.setToken(await getPageToken());
         if (!social.configured()) return 'No Facebook Page token is set yet, so nothing can be published. Tell the owner META_PAGE_TOKEN is missing.';
         const out = args.imageUrl
           ? await social.postImage({ page: args.page, imageUrl: args.imageUrl, message: args.message })
@@ -2104,21 +2106,92 @@ async function replyMaybeVoice(to, text, opts) {
 // Is Page publishing wired? Shows only whether a token exists, never the token, plus
 // what Meta answers when it is used. The fastest way to tell a missing env var from a
 // token that simply cannot see a Page.
+// --- Facebook Page login ------------------------------------------------------
+// Meta's own dashboards are a maze on a phone, so the owner clicks one link, approves,
+// and the long-lived Page tokens land here. The app secret never leaves the server.
+const FB_APP_ID = process.env.META_SOCIAL_APP_ID || '1148977434266000';
+const FB_REDIRECT = 'https://agent-x-ai-l1bd.vercel.app/api/fb/callback';
+const FB_SCOPES = 'pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish';
+
+app.get('/api/fb/login', (req, res) => {
+  if (!process.env.META_APP_SECRET) return res.status(503).send('META_APP_SECRET is not set on the service yet.');
+  const url = 'https://www.facebook.com/v21.0/dialog/oauth'
+    + '?client_id=' + encodeURIComponent(FB_APP_ID)
+    + '&redirect_uri=' + encodeURIComponent(FB_REDIRECT)
+    + '&scope=' + encodeURIComponent(FB_SCOPES)
+    + '&response_type=code&state=agentx';
+  res.redirect(url);
+});
+
+// Saved as a setting so it survives a redeploy; the env var still wins when set.
+async function getPageToken() {
+  if (process.env.META_PAGE_TOKEN) return process.env.META_PAGE_TOKEN;
+  try { return (await db.getSettings()).metaPageToken || ''; } catch (e) { return ''; }
+}
+async function rememberPageToken(token) {
+  process.env.META_PAGE_TOKEN = token;
+  try {
+    const s = await db.getSettings();
+    await db.putSettings({ ...s, metaPageToken: token });
+  } catch (e) { console.log('[fb token]', String(e && e.message || e).slice(0, 120)); }
+}
+
+app.get('/api/fb/callback', async (req, res) => {
+  const code = String(req.query.code || '');
+  if (!code) return res.status(400).send('Facebook sent no code: ' + String(req.query.error_description || req.query.error || ''));
+  if (!process.env.META_APP_SECRET) return res.status(503).send('META_APP_SECRET is not set on the service.');
+  try {
+    const ex = await fetch('https://graph.facebook.com/v21.0/oauth/access_token'
+      + '?client_id=' + encodeURIComponent(FB_APP_ID)
+      + '&client_secret=' + encodeURIComponent(process.env.META_APP_SECRET)
+      + '&redirect_uri=' + encodeURIComponent(FB_REDIRECT)
+      + '&code=' + encodeURIComponent(code), { signal: AbortSignal.timeout(15000) });
+    const exd = await ex.json();
+    if (!ex.ok || !exd.access_token) throw new Error('code exchange failed: ' + JSON.stringify(exd).slice(0, 200));
+
+    // A user token expires in hours; the Page tokens inside /me/accounts do not.
+    const acc = await fetch('https://graph.facebook.com/v21.0/me/accounts?fields=id,name,access_token&limit=50&access_token='
+      + encodeURIComponent(exd.access_token), { signal: AbortSignal.timeout(15000) });
+    const accd = await acc.json();
+    const pages = (accd && accd.data) || [];
+    const withToken = pages.filter((p) => p.access_token);
+    if (!withToken.length) {
+      return res.status(400).send('Facebook approved the login but returned no Page token. Check that you ticked both Pages on the consent screen.');
+    }
+    await rememberPageToken(withToken[0].access_token);
+    const saved = { pages: withToken.map((p) => ({ id: p.id, name: p.name })), at: new Date().toISOString() };
+    try {
+      const s = await db.getSettings();
+      await db.putSettings({ ...s, metaPages: JSON.stringify(saved) });
+    } catch (e) { /* the token is what matters */ }
+    res.set('Content-Type', 'text/html; charset=utf-8').send(
+      '<body style="font-family:system-ui;padding:32px;line-height:1.5">'
+      + '<h2>Connected</h2><p>AgentX can now publish to:</p><ul>'
+      + withToken.map((p) => '<li><b>' + String(p.name).replace(/[<>&]/g, '') + '</b> (id ' + p.id + ')</li>').join('')
+      + '</ul><p>You can close this tab and go back to WhatsApp.</p></body>'
+    );
+  } catch (e) {
+    res.status(500).send('Could not finish the connection: ' + String(e && e.message || e).slice(0, 200));
+  }
+});
+
 app.get('/api/admin/social', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
     const social = require('./lib/social');
-    const has = Boolean(process.env.META_PAGE_TOKEN);
-    const out = { tokenSet: has, tokenLength: has ? process.env.META_PAGE_TOKEN.length : 0, pageIdSet: Boolean(process.env.META_PAGE_ID) };
+    const tok = await getPageToken();
+    social.setToken(tok);
+    const has = Boolean(tok);
+    const out = { tokenSet: has, tokenLength: has ? tok.length : 0, tokenSource: process.env.META_PAGE_TOKEN ? 'env' : (has ? 'stored setting' : 'none'), pageIdSet: Boolean(process.env.META_PAGE_ID) };
     if (has) {
       try { out.pages = await social.listPages(); }
       catch (e) { out.error = String(e && e.message || e).slice(0, 300); }
       try {
-        const me = await fetch('https://graph.facebook.com/v21.0/me?fields=id,name&access_token=' + encodeURIComponent(process.env.META_PAGE_TOKEN), { signal: AbortSignal.timeout(12000) });
+        const me = await fetch('https://graph.facebook.com/v21.0/me?fields=id,name&access_token=' + encodeURIComponent(tok), { signal: AbortSignal.timeout(12000) });
         out.tokenOwner = await me.json();
       } catch (e) { out.ownerError = String(e && e.message || e).slice(0, 200); }
       try {
-        const dbg = await fetch('https://graph.facebook.com/v21.0/debug_token?input_token=' + encodeURIComponent(process.env.META_PAGE_TOKEN) + '&access_token=' + encodeURIComponent(process.env.META_PAGE_TOKEN), { signal: AbortSignal.timeout(12000) });
+        const dbg = await fetch('https://graph.facebook.com/v21.0/debug_token?input_token=' + encodeURIComponent(tok) + '&access_token=' + encodeURIComponent(tok), { signal: AbortSignal.timeout(12000) });
         const d = await dbg.json();
         out.debug = d && d.data ? { type: d.data.type, app_id: d.data.app_id, valid: d.data.is_valid, scopes: d.data.scopes, expires: d.data.expires_at } : d;
       } catch (e) { out.debugError = String(e && e.message || e).slice(0, 200); }
