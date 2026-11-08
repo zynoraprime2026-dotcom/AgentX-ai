@@ -11,7 +11,7 @@
     },
     {
       "path": "/api/cron/daily-post?slot=evening",
-      "schedule": "0 17 * * *"
+      "schedule": "30 19 * * *"
     }
   ],
   "rewrites": [
