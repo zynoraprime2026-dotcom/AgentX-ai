@@ -2267,7 +2267,8 @@ app.all('/api/admin/instagram', async (req, res) => {
   try {
     if (req.method === 'GET') {
       const accounts = await ig.accounts();
-      return res.json({ accounts });
+      const token = await ig.tokenInfo().catch(() => null);
+      return res.json({ accounts, token });
     }
     const body = req.body || {};
     if (!body.imageUrl || !body.caption) return res.status(400).json({ error: 'imageUrl and caption are required' });
