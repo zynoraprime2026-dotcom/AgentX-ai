@@ -2015,6 +2015,22 @@ async function waSend(to, text, phoneId, token) {
   }
 }
 
+// Anything wrong with an unattended post is useless sitting in a log the owner never
+// opens, so failures go to him directly. A send that fails is swallowed: the cron must
+// not fall over because the alert could not be delivered.
+async function alertOwner(text) {
+  const digits = String(process.env.OWNER_WHATSAPP_NUMBER || '').replace(/\D/g, '');
+  const tg = String(process.env.OWNER_TELEGRAM_ID || '').trim();
+  const sent = [];
+  if (digits) {
+    try { await waSend(digits, text); sent.push('whatsapp'); } catch (e) { sent.push('whatsapp failed'); }
+  }
+  if (tg) {
+    try { await tgSend(tg, text); sent.push('telegram'); } catch (e) { sent.push('telegram failed'); }
+  }
+  return sent;
+}
+
 function captionClean(text) {
   return String(text || '')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
@@ -2689,8 +2705,23 @@ api.get('/cron/daily-post', async (req, res) => {
       return res.json({ ok: true, ...out });
     }
     const out = await daily.run({ ...deps, slot: String(req.query.slot || '') || undefined });
+    const trouble = [];
+    if (out.facebook && out.facebook.error) trouble.push('Facebook: ' + out.facebook.error);
+    if (out.instagram && out.instagram.error) trouble.push('Instagram: ' + out.instagram.error);
+    if (out.skipped) trouble.push(out.skipped);
+    else if (out.ok === false) trouble.push('nothing published');
+    if (out.claimSaved === false) trouble.push('the day was not recorded: ' + (out.claimError || 'unknown'));
+    if (out.guard) trouble.push('guard: ' + out.guard);
+    if (trouble.length) out.alert = await alertOwner('Daily post ' + (out.slot || '') + ' ' + (out.ref || '') + '\n' + trouble.join('\n'));
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
+});
+api.get('/admin/daily-preview', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const rows = await daily.upcoming(req.query.count || 8, req.query.date || undefined);
+    return res.json({ ok: true, cursor: await daily.cursorIndex(), count: rows.length, posts: rows });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 300) }); }
 });
 api.all('/admin/daily-post', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
@@ -2706,6 +2737,7 @@ api.all('/admin/daily-post', async (req, res) => {
     if (q.slot === 'morning' || q.slot === 'evening') opts.slot = q.slot;
     if (q.index !== undefined && q.index !== '') opts.index = parseInt(q.index, 10) || 0;
     if (q.date) opts.date = q.date;
+    if (String(q.guard) === '0') opts.guard = false;
     opts.generateImage = (prompt) => deps.studio('/v1/image/generate', { prompt, width: 1024, height: 1280 }).then((j) => j && j.url);
     const out = await daily.run(opts);
     return res.json(out);
@@ -2844,9 +2876,18 @@ async function postDailyFromChat(ctx) {
   const head = 'Published the ' + out.slot + ' ayah (' + out.ref + ').';
   return [head, fb, ig].filter(Boolean).join('\n');
 }
+// The owner can see what is queued before it goes out, and swap a verse if he wants to.
+async function previewDailyFromChat(ctx) {
+  const rows = await daily.upcoming(8);
+  if (!rows.length) return 'Nothing is queued right now.';
+  const lines = rows.map((r) => (r.slot === 'morning' ? 'Morning' : 'Evening') + ' ' + r.date + ' — ayah ' + r.ref + '\n' + r.note);
+  return 'The next eight posts, in order:\n\n' + lines.join('\n\n');
+}
+
 const commands = require('./lib/commands').create({
   ilm: (path, params) => ilmCall(path, params, { as: 'json' }),
-  postDaily: postDailyFromChat
+  postDaily: postDailyFromChat,
+  dailyPreview: previewDailyFromChat
 });
 
 suite.attach({

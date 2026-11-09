@@ -71,3 +71,34 @@ Then open Settings and paste your Groq API key from https://console.groq.com/key
 
 ---
 Experiment by Abdulrahim Abubakar · Zynora AI · Tarkwa, Ghana
+
+## Daily post pipeline (2026-11-09)
+
+One ayah, one image, two channels, twice a day. What decides which verse goes out:
+
+1. `daily_cursor` in `agx_social` is the only source of order. Every successful publish
+   moves it on by one, so a manual post consumes a verse instead of repeating the
+   morning's. The date only seeds the very first run. Sixty verses in
+   `data/daily_ayat.json` mean an ayah returns after about a month at two posts a day.
+2. `daily_last_<slot>` holds the day that slot last published, and a run that is not
+   forced returns `skipped` rather than publishing twice. Records are JSON text, so they
+   are parsed on read (`parseRecord`) — comparing the raw string to an object is what let
+   four copies of 33:41 reach the Page on 2026-11-09.
+3. Before publishing, the pipeline reads the Page's last ten posts and compares captions
+   with whitespace flattened. If the exact post is already up there, it moves on to the
+   next verse and reports `guard`. A guard failure is reported as `guardError` and never
+   blocks a post. `guard=0` on the admin route switches it off.
+
+Seeing and changing the queue:
+
+- WhatsApp or Telegram, owner only: `preview`, `queue`, `what's next`, or `/preview` lists
+  the next eight posts with their verses and notes.
+- `GET /api/admin/daily-preview?count=8` (admin key) returns the same as JSON.
+- `GET /api/admin/daily-post?dry=1` shows what would go out next without publishing.
+
+Failures are no longer only in the logs: the cron route messages the owner on WhatsApp
+and Telegram when a channel errors, when nothing was published, when the day could not be
+recorded, or when the guard moved the verse.
+
+Tests: `node test-daily-rotation.js` (27 assertions, order and the daily claim) and
+`node test-daily-guard.js` (13, preview, the page guard and the alert paths).
