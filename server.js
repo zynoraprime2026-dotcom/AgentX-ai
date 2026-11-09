@@ -2721,10 +2721,18 @@ api.get('/cron/fajr', async (req, res) => {
 // An admin key that was never configured must never match, and a match must not
 // leak its length or content through timing.
 function adminKeyOk(req) {
-  const configured = process.env.ADMIN_KEY;
+  // Two keys are honoured: ADMIN_KEY (the owner's dashboard key) and
+  // PRIME_ADMIN_KEY, which the owner's assistant keeps in its own vault so an
+  // owner command can be carried out from chat without the two of them passing
+  // the dashboard secret around. Both are compared in constant time and every
+  // candidate is checked, so a near-miss cannot reveal which key matched.
+  const configured = [process.env.ADMIN_KEY, process.env.PRIME_ADMIN_KEY]
+    .filter((k) => typeof k === 'string' && k.length >= 16);
   const given = req.headers['x-admin-key'];
-  if (!configured || typeof given !== 'string' || !given) return false;
-  return safeEq(given, configured);
+  if (!configured.length || typeof given !== 'string' || !given) return false;
+  let ok = false;
+  for (const k of configured) { if (safeEq(given, k)) ok = true; }
+  return ok;
 }
 function isFounderOrKey(req) {
   return Boolean((req.user && req.user.founder) || adminKeyOk(req));
