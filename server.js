@@ -2693,14 +2693,17 @@ function slotForNow(date) {
 async function dailyDeps(slot) {
   const map = await dailySchedule();
   const target = map[slotForNow(slot)] || map.morning;
-  return {
+  const deps = {
     ilm: (p) => ilmCall(p, null, { as: 'json' }),
     studio: async (p, body) => JSON.parse(await studioCall(p, body)),
     social: require('./lib/social'),
-    instagram: require('./lib/instagram'),
     page: target.page,
     igAccount: target.igAccount
   };
+  // A slot with no Instagram account of its own must not fall back to another Page's
+  // account, or the same ayah would go to that account twice in one day.
+  if (target.igAccount) deps.instagram = require('./lib/instagram');
+  return deps;
 }
 // Instagram rides a 60-day user token. With the app secret on the server it can be
 // extended in place, so the account never lapses and nobody has to renew by hand.
@@ -2730,8 +2733,8 @@ api.get('/cron/daily-post', async (req, res) => {
     const deps = await dailyDeps(String(req.query.slot || req.body && req.body.slot || ''));
     const pgTok = await getPageToken();
     deps.social.setToken(pgTok);
-    deps.instagram.setToken(pgTok);
-    try { deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
+    if (deps.instagram) deps.instagram.setToken(pgTok);
+    try { if (deps.instagram) deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
     if (want === 'preview' || want === '1' || want === 'true') {
       const slotQ = String(req.query.slot || '') || undefined;
       const out = await daily.run({ ...deps, slot: slotQ, dry: true, generateImage: (prompt) => deps.studio('/v1/image/generate', { prompt, width: 1024, height: 1280 }).then((j) => j && j.url) });
@@ -2814,8 +2817,8 @@ api.all('/admin/daily-post', async (req, res) => {
     const deps = await dailyDeps(String(req.query.slot || req.body && req.body.slot || ''));
     const pgTok = await getPageToken();
     deps.social.setToken(pgTok);
-    deps.instagram.setToken(pgTok);
-    try { deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
+    if (deps.instagram) deps.instagram.setToken(pgTok);
+    try { if (deps.instagram) deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
     const opts = { ...deps, dry, force: String(q.force) === '1' };
     if (q.slot === 'morning' || q.slot === 'evening') opts.slot = q.slot;
     if (q.index !== undefined && q.index !== '') opts.index = parseInt(q.index, 10) || 0;
@@ -2951,8 +2954,8 @@ async function postDailyFromChat(ctx) {
   const deps = await dailyDeps(slot);
   const pgTok = await getPageToken();
   deps.social.setToken(pgTok);
-  deps.instagram.setToken(pgTok);
-  try { deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
+  if (deps.instagram) deps.instagram.setToken(pgTok);
+  try { if (deps.instagram) deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
   const out = await daily.run({ ...deps, slot, force: true });
   const fb = out.facebook && out.facebook.url ? 'Facebook: ' + out.facebook.url : (out.facebook && out.facebook.error ? 'Facebook failed: ' + out.facebook.error : '');
   const ig = out.instagram && out.instagram.permalink ? 'Instagram: ' + out.instagram.permalink : (out.instagram && out.instagram.error ? 'Instagram failed: ' + out.instagram.error : '');

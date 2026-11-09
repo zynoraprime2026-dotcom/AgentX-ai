@@ -115,3 +115,7 @@ so this cannot add posting times; it decides which Page each of the two runs ser
 `GET /api/admin/insights?limit=15` reads the Page's recent posts with likes, comments, shares, the ayah ref
 and a score (likes + 2x comments + 3x shares), newest first, plus the best performer. Read-only, and the input
 for steering the rotation by evidence later.
+
+A slot with no Instagram account of its own publishes to Facebook only: it never falls
+back to another Page's account, since that would put the same ayah on one account twice
+in a day. Set `"ig": ""` for that slot.
