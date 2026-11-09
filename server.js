@@ -2659,14 +2659,47 @@ api.post('/cron/tick', runTick);
 // from ilm-api, the image from studio-api, and the day is claimed before publishing so
 // a retried cron cannot double-post.
 const daily = require('./lib/daily');
-async function dailyDeps() {
+// Which Page and Instagram account a slot posts to. The default is the one pair the
+// pipeline has always used; the owner can point each slot at a different Page without a
+// redeploy, by POSTing /api/admin/daily-schedule. Read from agx_social, so a bad or
+// half-written record can never take the cron down: it falls back to the defaults.
+const DAILY_DEFAULTS = {
+  page: process.env.DAILY_FB_PAGE || "The salafi Da'wah",
+  igAccount: process.env.DAILY_IG_ACCOUNT || 'the_salafi_dawah'
+};
+
+async function dailySchedule() {
+  const map = { morning: { ...DAILY_DEFAULTS }, evening: { ...DAILY_DEFAULTS } };
+  const raw = await db.getSocial('daily_schedule').catch(() => '');
+  if (!raw) return map;
+  let saved = null;
+  try { saved = JSON.parse(String(raw)); } catch (e) { return map; }
+  for (const slot of ['morning', 'evening']) {
+    const e = saved && saved[slot];
+    if (e && typeof e === 'object') {
+      if (e.page) map[slot].page = String(e.page).slice(0, 120);
+      if (e.ig) map[slot].igAccount = String(e.ig).slice(0, 120);
+      if (e.ig === null || e.ig === '') map[slot].igAccount = '';
+    }
+  }
+  return map;
+}
+
+function slotForNow(date) {
+  const t = date ? new Date(date) : new Date();
+  return t.getUTCHours() < 12 ? 'morning' : 'evening';
+}
+
+async function dailyDeps(slot) {
+  const map = await dailySchedule();
+  const target = map[slotForNow(slot)] || map.morning;
   return {
     ilm: (p) => ilmCall(p, null, { as: 'json' }),
     studio: async (p, body) => JSON.parse(await studioCall(p, body)),
     social: require('./lib/social'),
     instagram: require('./lib/instagram'),
-    page: process.env.DAILY_FB_PAGE || "The salafi Da'wah",
-    igAccount: process.env.DAILY_IG_ACCOUNT || 'the_salafi_dawah'
+    page: target.page,
+    igAccount: target.igAccount
   };
 }
 // Instagram rides a 60-day user token. With the app secret on the server it can be
@@ -2694,7 +2727,7 @@ api.get('/cron/daily-post', async (req, res) => {
   if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
   const want = String(req.query.status || req.query.dry || '');
   try {
-    const deps = await dailyDeps();
+    const deps = await dailyDeps(String(req.query.slot || req.body && req.body.slot || ''));
     const pgTok = await getPageToken();
     deps.social.setToken(pgTok);
     deps.instagram.setToken(pgTok);
@@ -2716,6 +2749,56 @@ api.get('/cron/daily-post', async (req, res) => {
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
+api.get('/admin/daily-schedule', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  res.json({ ok: true, defaults: DAILY_DEFAULTS, schedule: await dailySchedule(), currentSlot: slotForNow() });
+});
+
+api.post('/admin/daily-schedule', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const social = require('./lib/social');
+    social.setToken(await getPageToken());
+    const map = {};
+    for (const slot of ['morning', 'evening']) {
+      const e = body[slot];
+      if (!e) continue;
+      if (e.page) {
+        const page = await social.resolvePage(String(e.page)).catch(() => null);
+        if (!page) return res.status(400).json({ error: 'unknown or unreachable Page: ' + String(e.page).slice(0, 80) });
+        map[slot] = { page: page.name || String(e.page), ig: e.ig === undefined ? undefined : (e.ig || '') };
+      }
+    }
+    if (!Object.keys(map).length) return res.status(400).json({ error: 'send {"morning":{"page":"..."},"evening":{...}}' });
+    const current = JSON.parse((await db.getSocial('daily_schedule').catch(() => '')) || '{}');
+    const next = { ...current, ...map };
+    for (const slot of Object.keys(map)) if (map[slot].ig === undefined) delete next[slot].ig;
+    await db.putSocial('daily_schedule', JSON.stringify(next));
+    return res.json({ ok: true, schedule: await dailySchedule() });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 300) }); }
+});
+
+// What the Page actually rewarded, so the rotation can be steered by evidence rather
+// than by taste. Reads only; it never changes the content.
+api.get('/admin/insights', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const social = require('./lib/social');
+    social.setToken(await getPageToken());
+    const r = await social.recentPosts({ page: String(req.query.page || DAILY_DEFAULTS.page), limit: parseInt(req.query.limit, 10) || 15, fields: 'id,message,created_time,permalink_url,shares,likes.summary(true),comments.summary(true)' });
+    const rows = (r.posts || []).map((p) => {
+      const m = /Surah\s*(\d+)\s*[—-]\s*ayah\s*(\d+)/.exec(p.message || '');
+      const likes = (p.likes && p.likes.summary && p.likes.summary.total_count) || 0;
+      const comments = (p.comments && p.comments.summary && p.comments.summary.total_count) || 0;
+      const shares = (p.shares && p.shares.count) || 0;
+      return { id: p.id, created: p.created_time, ref: m ? m[1] + ':' + m[2] : null, likes, comments, shares, score: likes + comments * 2 + shares * 3, permalink: p.permalink_url || null };
+    });
+    const best = rows.slice().sort((a, b) => b.score - a.score)[0] || null;
+    return res.json({ ok: true, page: r.page, count: rows.length, best, posts: rows });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 300) }); }
+});
+
 api.get('/admin/daily-preview', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
@@ -2728,7 +2811,7 @@ api.all('/admin/daily-post', async (req, res) => {
   const q = { ...(req.query || {}), ...(req.body || {}) };
   const dry = String(q.dry === undefined ? '1' : q.dry) !== '0' && String(q.dry) !== 'false';
   try {
-    const deps = await dailyDeps();
+    const deps = await dailyDeps(String(req.query.slot || req.body && req.body.slot || ''));
     const pgTok = await getPageToken();
     deps.social.setToken(pgTok);
     deps.instagram.setToken(pgTok);
@@ -2864,12 +2947,12 @@ api.get('/broadcast/subscribers', async (req, res) => { if (!req.user.founder) r
 
 // Publishing on demand from the owner's chat, using the same pipeline as the cron.
 async function postDailyFromChat(ctx) {
-  const deps = await dailyDeps();
+  const slot = slotForNow();
+  const deps = await dailyDeps(slot);
   const pgTok = await getPageToken();
   deps.social.setToken(pgTok);
   deps.instagram.setToken(pgTok);
   try { deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
-  const slot = new Date().getUTCHours() < 12 ? 'morning' : 'evening';
   const out = await daily.run({ ...deps, slot, force: true });
   const fb = out.facebook && out.facebook.url ? 'Facebook: ' + out.facebook.url : (out.facebook && out.facebook.error ? 'Facebook failed: ' + out.facebook.error : '');
   const ig = out.instagram && out.instagram.permalink ? 'Instagram: ' + out.instagram.permalink : (out.instagram && out.instagram.error ? 'Instagram failed: ' + out.instagram.error : '');

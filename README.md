@@ -102,3 +102,16 @@ recorded, or when the guard moved the verse.
 
 Tests: `node test-daily-rotation.js` (27 assertions, order and the daily claim) and
 `node test-daily-guard.js` (13, preview, the page guard and the alert paths).
+
+## Per-page slots and engagement (2026-11-09)
+
+Each slot can post to its own Page and Instagram account without a redeploy:
+`GET /api/admin/daily-schedule` shows the current map, and `POST /api/admin/daily-schedule` with
+`{"morning":{"page":"The salafi Da'wah","ig":"the_salafi_dawah"},"evening":{"page":"Hikmah Hub","ig":"thesalafidawah"}}`
+sets it. The Page is resolved before it is stored, so a typo is refused rather than saved, and a missing or
+half-written record falls back to `DAILY_FB_PAGE` / `DAILY_IG_ACCOUNT`. Vercel Hobby allows two runs a day,
+so this cannot add posting times; it decides which Page each of the two runs serves.
+
+`GET /api/admin/insights?limit=15` reads the Page's recent posts with likes, comments, shares, the ayah ref
+and a score (likes + 2x comments + 3x shares), newest first, plus the best performer. Read-only, and the input
+for steering the rotation by evidence later.
