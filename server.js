@@ -1664,7 +1664,7 @@ api.post('/chat/:id', rateLimitUser(20, 60e3, 'chat'), async (req, res) => {
   const started = Date.now();
   const base = { ownerId: req.user.id, agentId: a.id, agentName: a.name, channel: 'web' };
   if (lastUser && /^\//.test(String(lastUser.content || '').trim())) {
-    const out = await commands.handle(lastUser.content, { ownerId: req.user.id, channel: 'web', key: 'user:' + req.user.id });
+    const out = await commands.handle(lastUser.content, { ownerId: req.user.id, channel: 'web', key: 'user:' + req.user.id, canManage: Boolean(req.user.founder) });
     if (out) {
       suite.logEvent({ ...base, kind: 'message', query: String(lastUser.content).slice(0, 300) });
       suite.logEvent({ ...base, kind: 'reply', latency: Date.now() - started, query: String(lastUser.content).slice(0, 300) });
@@ -1855,8 +1855,10 @@ async function handleTgMessage(msg) {
       return tgSend(chatId, 'Pending reminders:\n' + mine.slice(0, 10).map(r => '• ' + r.dueAt.slice(0, 16).replace('T', ' ') + ' UTC — ' + r.title).join('\n'));
     }
     // prayer, quran, hadith, dua, fiqh — answered straight from the Ilm API
+    const tgOwner = String(process.env.OWNER_TELEGRAM_ID || '').trim();
     const islamic = await commands.handle(text, {
-      ownerId: anyAgent && anyAgent.ownerId ? anyAgent.ownerId : null, channel: 'telegram', key: String(chatId)
+      ownerId: anyAgent && anyAgent.ownerId ? anyAgent.ownerId : null, channel: 'telegram', key: String(chatId),
+      canManage: Boolean(tgOwner) && !isGroup && String(chatId) === tgOwner
     });
     if (islamic) return tgSend(chatId, islamic);
   }
@@ -2500,8 +2502,10 @@ async function handleWa(req) {
     return reply(on ? 'Voice replies are on. I will send voice notes from now on. Send /voice off to go back to text.'
                     : 'Voice replies are off. Send /voice on to hear answers instead.');
   }
+  const waOwnerDigits = String(process.env.OWNER_WHATSAPP_NUMBER || '').replace(/\D/g, '');
   const waCmd = await commands.handle(text, {
-    ownerId: agent.ownerId || null, channel: 'whatsapp', key: String(hkey)
+    ownerId: agent.ownerId || null, channel: 'whatsapp', key: String(hkey),
+    canManage: Boolean(waOwnerDigits) && !isGroup && String(from || '').replace(/\D/g, '') === waOwnerDigits
   });
   if (waCmd) return reply(waCmd);
 
@@ -2818,7 +2822,24 @@ api.delete('/admin/users/:id', async (req, res) => {
 
 api.get('/broadcast/subscribers', async (req, res) => { if (!req.user.founder) return res.status(403).json({ error: 'founder only' }); res.json(await db.listSubscribers()); });
 
-const commands = require('./lib/commands').create({ ilm: (path, params) => ilmCall(path, params, { as: 'json' }) });
+// Publishing on demand from the owner's chat, using the same pipeline as the cron.
+async function postDailyFromChat(ctx) {
+  const deps = await dailyDeps();
+  const pgTok = await getPageToken();
+  deps.social.setToken(pgTok);
+  deps.instagram.setToken(pgTok);
+  try { deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
+  const slot = new Date().getUTCHours() < 12 ? 'morning' : 'evening';
+  const out = await daily.run({ ...deps, slot, force: true });
+  const fb = out.facebook && out.facebook.url ? 'Facebook: ' + out.facebook.url : (out.facebook && out.facebook.error ? 'Facebook failed: ' + out.facebook.error : '');
+  const ig = out.instagram && out.instagram.permalink ? 'Instagram: ' + out.instagram.permalink : (out.instagram && out.instagram.error ? 'Instagram failed: ' + out.instagram.error : '');
+  const head = 'Published the ' + out.slot + ' ayah (' + out.ref + ').';
+  return [head, fb, ig].filter(Boolean).join('\n');
+}
+const commands = require('./lib/commands').create({
+  ilm: (path, params) => ilmCall(path, params, { as: 'json' }),
+  postDaily: postDailyFromChat
+});
 
 suite.attach({
   api,
