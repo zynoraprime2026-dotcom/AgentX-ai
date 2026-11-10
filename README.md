@@ -119,3 +119,38 @@ for steering the rotation by evidence later.
 A slot with no Instagram account of its own publishes to Facebook only: it never falls
 back to another Page's account, since that would put the same ayah on one account twice
 in a day. Set `"ig": ""` for that slot.
+
+## Workflows and the run log (2026-11-10)
+
+A workflow is data in `agx_workflows`, not code, so the owner can change what happens without a
+deploy. Shape: `{id, name, enabled, trigger, approval, steps[]}`.
+
+*Trigger* is `{type:"manual"}`, `{type:"cron", slot:"morning"|"evening"}` or `{type:"webhook"}`.
+Cron workflows ride the two runs the daily post already uses, because Vercel's free plan allows
+only those two; they are not a third schedule.
+
+*Steps* run in order and may be `http`, `agent` or `notify`. `http` is limited to https and to
+`WORKFLOW_HOSTS` (default ilm-api and this service), because a step that can call any URL is an
+open redirect with extra steps. A non-2xx response fails the step unless it carries
+`allowFailure: true`. `notify` is the only step that reaches a person, and it is held for
+approval unless the workflow was created with `approval: false`. `when: {path, equals|notEquals|
+exists|contains}` skips a step when its condition is not met. `{{steps.name.body.x}}` and
+`{{input.y}}` fill from what actually ran; a missing path renders empty, never `undefined`.
+
+*The run log* is the point. Every run keeps its steps, each step's saved output, and its failure
+reason in `agx_runs`; approval runs record what was held and when it went out. Approving sends
+only the held text and never re-runs the research, so what the owner approved is what was sent.
+
+Endpoints (admin key): `GET/POST /api/workflows`, `POST /api/workflows/delete`,
+`POST /api/workflows/:id/run`, `GET /api/runs`, `GET /api/runs/:id`,
+`POST /api/runs/:id/approve|reject`.
+
+From the owner's chat: `workflows`, `runs`, `run <id>`, `approve <id>`, `reject <id>`.
+A gated run arrives as a message with the exact text and a one-word way to send or drop it.
+
+Rules baked in: verse and hadith text is fetched from ilm-api, never composed by the model; a
+workflow cannot publish to a Page yet, because the approval gate comes before that power.
+
+Tests: `node test-workflows.js` (40 assertions: definition rules, templating, conditions, ordered
+steps, failure stops later steps, allowFailure, the approval gate and reject, and cron slot
+selection).

@@ -68,6 +68,17 @@ async function initPg(ssl) {
     CREATE TABLE IF NOT EXISTS agx_subs_sent (chat_id text PRIMARY KEY, day text);
     CREATE TABLE IF NOT EXISTS agx_hist (id bigserial PRIMARY KEY, channel text, chat_id text, role text, content text);
     CREATE INDEX IF NOT EXISTS agx_hist_chat ON agx_hist (channel, chat_id, id);
+    CREATE TABLE IF NOT EXISTS agx_workflows (
+      id text PRIMARY KEY, name text NOT NULL, enabled boolean DEFAULT true,
+      trigger jsonb DEFAULT '{}', steps jsonb DEFAULT '[]', approval boolean DEFAULT false,
+      created_at text, updated_at text, created_by text
+    );
+    CREATE TABLE IF NOT EXISTS agx_runs (
+      id bigserial PRIMARY KEY, workflow_id text, status text, trigger text,
+      steps jsonb DEFAULT '[]', output text, error text,
+      started_at text, finished_at text, approved_at text
+    );
+    CREATE INDEX IF NOT EXISTS agx_runs_wf ON agx_runs (workflow_id, id);
     CREATE TABLE IF NOT EXISTS agx_profiles (
       channel text NOT NULL, chat_id text NOT NULL, profile jsonb DEFAULT '{}', updated_at text,
       PRIMARY KEY (channel, chat_id)
@@ -96,6 +107,22 @@ function rowToAgent(r) {
     toolsets: Array.isArray(r.toolsets) ? r.toolsets : [],
     source: r.source || 'user',
     isMain: r.is_main === true
+  };
+}
+
+function rowToWorkflow(r) {
+  return {
+    id: r.id, name: r.name, enabled: r.enabled !== false,
+    trigger: r.trigger || {}, steps: r.steps || [], approval: r.approval === true,
+    createdAt: r.created_at, updatedAt: r.updated_at, createdBy: r.created_by || ''
+  };
+}
+
+function rowToRun(r) {
+  return {
+    id: String(r.id), workflowId: r.workflow_id, status: r.status, trigger: r.trigger,
+    steps: r.steps || [], output: r.output || '', error: r.error || '',
+    startedAt: r.started_at, finishedAt: r.finished_at, approvedAt: r.approved_at
   };
 }
 
@@ -297,6 +324,104 @@ const store = {
     }
     await pool.query('CREATE TABLE IF NOT EXISTS agx_social (key text primary key, value text, updated timestamptz default now())');
     await pool.query('INSERT INTO agx_social (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2, updated=now()', [key, value]);
+  },
+
+  // ---------- Workflows and their run log ----------
+  // A workflow is data, not code: trigger + steps + whether a human has to approve it.
+  // The run log is the point of the exercise. Automation nobody can inspect is automation
+  // nobody trusts, so every run keeps its steps, their outputs and its failure reason.
+  async listWorkflows() {
+    if (!pool) return readJson(path.join(DATA_DIR, 'workflows.json'), []);
+    const r = await pool.query('SELECT * FROM agx_workflows ORDER BY name');
+    return r.rows.map(rowToWorkflow);
+  },
+  async getWorkflow(id) {
+    if (!pool) return readJson(path.join(DATA_DIR, 'workflows.json'), []).find((w) => w.id === id) || null;
+    const r = await pool.query('SELECT * FROM agx_workflows WHERE id=$1', [id]);
+    return r.rows[0] ? rowToWorkflow(r.rows[0]) : null;
+  },
+  async putWorkflow(w) {
+    const now = new Date().toISOString();
+    if (!pool) {
+      const f = path.join(DATA_DIR, 'workflows.json');
+      const all = readJson(f, []);
+      const i = all.findIndex((x) => x.id === w.id);
+      const rec = { ...w, createdAt: i >= 0 ? all[i].createdAt : now, updatedAt: now };
+      if (i >= 0) all[i] = rec; else all.push(rec);
+      writeJson(f, all);
+      return rec;
+    }
+    await pool.query(
+      `INSERT INTO agx_workflows (id,name,enabled,trigger,steps,approval,created_at,updated_at,created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8)
+       ON CONFLICT (id) DO UPDATE SET name=$2, enabled=$3, trigger=$4, steps=$5, approval=$6, updated_at=$7`,
+      [w.id, w.name, w.enabled !== false, JSON.stringify(w.trigger || {}), JSON.stringify(w.steps || []), !!w.approval, now, w.createdBy || '']
+    );
+    return this.getWorkflow(w.id);
+  },
+  async deleteWorkflow(id) {
+    if (!pool) {
+      const f = path.join(DATA_DIR, 'workflows.json');
+      writeJson(f, readJson(f, []).filter((w) => w.id !== id));
+      return true;
+    }
+    await pool.query('DELETE FROM agx_workflows WHERE id=$1', [id]);
+    return true;
+  },
+  async insertRun(r) {
+    const started = r.startedAt || new Date().toISOString();
+    if (!pool) {
+      const f = path.join(DATA_DIR, 'runs.json');
+      const all = readJson(f, []);
+      const id = String((Number(all[0] && all[0].id) || 0) + 1);
+      all.unshift({ id, ...r, started_at: started });
+      writeJson(f, all.slice(0, 500));
+      return id;
+    }
+    const out = await pool.query(
+      `INSERT INTO agx_runs (workflow_id,status,trigger,steps,output,error,started_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [r.workflowId, r.status || 'running', r.trigger || 'manual', JSON.stringify(r.steps || []), r.output || '', r.error || '', started]
+    );
+    return String(out.rows[0].id);
+  },
+  async updateRun(id, patch) {
+    if (!pool) {
+      const f = path.join(DATA_DIR, 'runs.json');
+      const all = readJson(f, []);
+      const i = all.findIndex((x) => String(x.id) === String(id));
+      if (i >= 0) { all[i] = { ...all[i], ...patch }; if (patch.steps) all[i].steps = patch.steps; }
+      writeJson(f, all);
+      return all[i] || null;
+    }
+    const cur = await pool.query('SELECT * FROM agx_runs WHERE id=$1', [id]);
+    if (!cur.rows[0]) return null;
+    const row = cur.rows[0];
+    await pool.query(
+      `UPDATE agx_runs SET status=$2, steps=$3, output=$4, error=$5, finished_at=$6, approved_at=$7 WHERE id=$1`,
+      [id,
+       patch.status || row.status,
+       JSON.stringify(patch.steps || row.steps || []),
+       patch.output === undefined ? row.output : patch.output,
+       patch.error === undefined ? row.error : patch.error,
+       patch.finishedAt === undefined ? row.finished_at : patch.finishedAt,
+       patch.approvedAt === undefined ? row.approved_at : patch.approvedAt]
+    );
+    return this.getRun(id);
+  },
+  async getRun(id) {
+    if (!pool) {
+      const all = readJson(path.join(DATA_DIR, 'runs.json'), []);
+      return all.find((x) => String(x.id) === String(id)) || null;
+    }
+    const r = await pool.query('SELECT * FROM agx_runs WHERE id=$1', [id]);
+    return r.rows[0] ? rowToRun(r.rows[0]) : null;
+  },
+  async listRuns(limit) {
+    const n = Math.max(1, Math.min(200, parseInt(limit, 10) || 20));
+    if (!pool) return readJson(path.join(DATA_DIR, 'runs.json'), []).slice(0, n);
+    const r = await pool.query('SELECT * FROM agx_runs ORDER BY id DESC LIMIT $1', [n]);
+    return r.rows.map(rowToRun);
   },
 
   // ---------- Fajr subscribers ----------

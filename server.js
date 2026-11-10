@@ -2749,9 +2749,120 @@ api.get('/cron/daily-post', async (req, res) => {
     if (out.claimSaved === false) trouble.push('the day was not recorded: ' + (out.claimError || 'unknown'));
     if (out.guard) trouble.push('guard: ' + out.guard);
     if (trouble.length) out.alert = await alertOwner('Daily post ' + (out.slot || '') + ' ' + (out.ref || '') + '\n' + trouble.join('\n'));
+    out.workflows = await runSlotWorkflows(String(req.query.slot || '') || out.slot || '');
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
+// ---------- workflows ----------
+// A workflow is a trigger plus steps; the run log is why anyone can trust it. Nothing here
+// reaches a stranger: the only outbound step is a notify, and notify waits for the owner's
+// approval unless the workflow was created with approval:false on purpose.
+const workflows = require('./lib/workflows');
+
+async function workflowDeps() {
+  const settings = await db.getSettings();
+  const key = (settings.groqApiKey && settings.groqApiKey.startsWith('gsk_')) ? settings.groqApiKey : (process.env.GROQ_API_KEY || '');
+  return {
+    fetch: (url, init) => fetch(url, init),
+    agent: async ({ prompt, system, model, maxTokens }) => providers.chat({
+      key,
+      model: model || 'openai/gpt-oss-120b',
+      tools: null,
+      maxTokens: maxTokens || 700,
+      temperature: 0.4,
+      messages: [
+        { role: 'system', content: system || 'You are a concise assistant inside a small automation. Reply with the thing asked for, no preamble.' },
+        { role: 'user', content: prompt }
+      ]
+    }),
+    notify: async (text) => (await alertOwner(text)).length > 0
+  };
+}
+
+api.get('/api/workflows', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const list = await db.listWorkflows();
+  res.json({ ok: true, count: list.length, workflows: list });
+});
+
+api.post('/api/workflows', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const saved = await workflows.save({ ...(req.body || {}), createdBy: (req.user && req.user.email) || 'admin-key' });
+    return res.json({ ok: true, workflow: saved });
+  } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 300) }); }
+});
+
+api.post('/api/workflows/delete', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const id = String((req.body && req.body.id) || '');
+  if (!id) return res.status(400).json({ error: 'send {"id":"..."}' });
+  await db.deleteWorkflow(id);
+  res.json({ ok: true, deleted: id });
+});
+
+api.post('/api/workflows/:id/run', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const wf = await db.getWorkflow(String(req.params.id));
+  if (!wf) return res.status(404).json({ error: 'no such workflow: ' + req.params.id });
+  try {
+    const out = await workflows.execute(wf, {
+      deps: await workflowDeps(),
+      trigger: 'manual',
+      input: (req.body && req.body.input) || {},
+      approved: String((req.body && req.body.approved) || '') === '1'
+    });
+    return res.json({ ok: out.status !== 'failed', run: out });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 300) }); }
+});
+
+api.get('/api/runs', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  res.json({ ok: true, runs: await db.listRuns(req.query.limit) });
+});
+
+api.get('/api/runs/:id', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const run = await db.getRun(String(req.params.id));
+  if (!run) return res.status(404).json({ error: 'no such run' });
+  res.json({ ok: true, run });
+});
+
+api.post('/api/runs/:id/:decision(approve|reject)', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const id = String(req.params.id);
+    if (!['approve', 'reject'].includes(req.params.decision)) return res.status(400).json({ error: 'decision must be approve or reject' });
+    const out = req.params.decision === 'approve'
+      ? await workflows.approve(id, { deps: await workflowDeps() })
+      : await workflows.reject(id);
+    return res.json({ ok: true, run: out });
+  } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 300) }); }
+});
+
+// Runs every enabled workflow attached to this cron slot, and reports each one. A failing
+// workflow must not stop the others or the daily post that already went out.
+async function runSlotWorkflows(slot) {
+  const due = await workflows.dueForSlot(slot).catch(() => []);
+  if (!due.length) return [];
+  const deps = await workflowDeps();
+  const out = [];
+  for (const wf of due) {
+    try {
+      const run = await workflows.execute(wf, { deps, trigger: 'cron:' + slot });
+      out.push({ id: wf.id, status: run.status, runId: run.id, error: run.error || '' });
+      if (run.status === 'pending_approval') {
+        const held = (run.steps || []).filter((s) => s.status === 'held').map((s) => s.text).join('\n\n');
+        await alertOwner('Workflow "' + wf.name + '" is waiting for your approval.\n\n' + held.slice(0, 1400) +
+          '\n\nReply approve ' + run.id + ' to send it, or reject ' + run.id + '.');
+      }
+    } catch (e) {
+      out.push({ id: wf.id, status: 'error', error: String((e && e.message) || e).slice(0, 200) });
+    }
+  }
+  return out;
+}
+
 api.get('/admin/daily-schedule', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   res.json({ ok: true, defaults: DAILY_DEFAULTS, schedule: await dailySchedule(), currentSlot: slotForNow() });
@@ -2970,10 +3081,56 @@ async function previewDailyFromChat(ctx) {
   return 'The next eight posts, in order:\n\n' + lines.join('\n\n');
 }
 
+// The owner's own chat is the natural place to see and drive workflows: list them, run
+// one, read the log, and approve what is waiting. Strangers never reach this.
+async function workflowFromChat(verb, arg) {
+  const v = String(verb || '').toLowerCase();
+  if (v === 'workflows') {
+    const list = await db.listWorkflows();
+    if (!list.length) return 'No workflows yet.';
+    return list.map((w) => '\u2022 ' + w.name + ' (' + w.id + ') \u2014 ' + (w.enabled ? 'on' : 'off') +
+      ', ' + w.steps.length + ' step' + (w.steps.length === 1 ? '' : 's') +
+      (w.approval ? ', needs your approval' : ', trusted (sends without asking)')).join('\n');
+  }
+  if (v === 'runs') {
+    const runs = await db.listRuns(10);
+    if (!runs.length) return 'No workflow has run yet.';
+    return runs.map((r) => {
+      const when = String(r.startedAt || '').slice(5, 16).replace('T', ' ');
+      const bad = r.error ? ' \u2014 ' + String(r.error).slice(0, 80) : '';
+      return '\u2022 ' + when + ' ' + r.workflowId + ': ' + r.status + ' (#' + r.id + ')' + bad;
+    }).join('\n');
+  }
+  if (v === 'run') {
+    const id = String(arg || '').trim();
+    if (!id) return 'Which workflow? Send: run <id>';
+    const wf = await db.getWorkflow(id);
+    if (!wf) return 'No workflow called "' + id + '". Send workflows to see them.';
+    const out = await workflows.execute(wf, { deps: await workflowDeps(), trigger: 'chat' });
+    const head = 'Ran "' + wf.name + '": ' + out.status + ' (#' + out.id + ').';
+    const err = out.error ? '\n' + String(out.error).slice(0, 200) : '';
+    const held = (out.steps || []).filter((s) => s.status === 'held').map((s) => s.text).join('\n\n');
+    if (held) return head + '\n\n' + held.slice(0, 1200) + '\n\nReply approve ' + out.id + ' to send it, or reject ' + out.id + '.';
+    return head + err;
+  }
+  if (v === 'approve' || v === 'reject') {
+    const id = String(arg || '').trim().replace(/^#/, '');
+    if (!id) return 'Which run? Send: ' + v + ' <number>';
+    try {
+      const out = v === 'approve'
+        ? await workflows.approve(id, { deps: await workflowDeps() })
+        : await workflows.reject(id);
+      return (v === 'approve' ? 'Sent. Run #' : 'Rejected. Run #') + out.id + ' is now ' + out.status + '.';
+    } catch (e) { return String((e && e.message) || e).slice(0, 200); }
+  }
+  return null;
+}
+
 const commands = require('./lib/commands').create({
   ilm: (path, params) => ilmCall(path, params, { as: 'json' }),
   postDaily: postDailyFromChat,
-  dailyPreview: previewDailyFromChat
+  dailyPreview: previewDailyFromChat,
+  workflowCommand: workflowFromChat
 });
 
 suite.attach({
