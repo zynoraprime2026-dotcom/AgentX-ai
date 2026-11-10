@@ -1171,6 +1171,33 @@ async function runTool(name, args, ctx) {
         await docs.put('triggers', { ...t, active: action === 'resume' });
         return '"' + t.name + '" is now ' + (action === 'resume' ? 'active' : 'paused') + '.';
       }
+      case 'schedule_view': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const map = await dailySchedule();
+        return 'Daily slots (UTC):\n'
+          + '  morning 06:00  ->  ' + map.morning.page + (map.morning.igAccount ? ' / @' + map.morning.igAccount : ' (Facebook only)') + '\n'
+          + '  evening 19:30  ->  ' + map.evening.page + (map.evening.igAccount ? ' / @' + map.evening.igAccount : ' (Facebook only)') + '\n'
+          + '  promo (rides the evening run)  ->  ' + map.promo.page;
+      }
+      case 'schedule_stage': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try {
+          const slot = String(args.slot || '').toLowerCase();
+          if (!['morning', 'evening'].includes(slot)) return 'Slot must be morning or evening; the promo slot has no run of its own.';
+          const social = require('./lib/social');
+          social.setToken(await getPageToken());
+          const page = await social.resolvePage(String(args.page || '')).catch(() => null);
+          if (!page) return 'That Page is unknown or unreachable: ' + String(args.page || '').slice(0, 80);
+          const map = await dailySchedule();
+          const now = map[slot];
+          const ig = args.ig === undefined ? now.igAccount : String(args.ig || '').replace(/^@/, '');
+          await setPendingSettings({ kind: 'schedule', slot, page: page.name, ig, before: now, at: new Date().toISOString() });
+          return 'I will point the ' + slot + ' run at ' + page.name + (ig ? ' and @' + ig : ' (Facebook only)') + '.\n\n'
+            + 'Now: ' + now.page + (now.igAccount ? ' / @' + now.igAccount : '') + '\n'
+            + 'After: ' + page.name + (ig ? ' / @' + ig : '') + '\n\n'
+            + 'Reply yes to save it, or no to leave it.';
+        } catch (e) { return 'Could not stage that: ' + String(e.message || e).slice(0, 200); }
+      }
       case 'page_profile': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         try {
@@ -1193,7 +1220,7 @@ async function runTool(name, args, ctx) {
           for (const k of Object.keys(wanted)) if (social.EDITABLE_FIELDS.includes(k)) allowed[k] = String(wanted[k]).slice(0, 2000);
           if (!Object.keys(allowed).length) return 'Nothing there I can change. Allowed fields: ' + social.EDITABLE_FIELDS.join(', ') + '.';
           const before = await social.pageProfile(page.id, token, Object.keys(allowed));
-          await setPendingSettings({ page: page.name, pageId: page.id, token, changes: allowed, before, at: new Date().toISOString() });
+          await setPendingSettings({ kind: 'profile', page: page.name, pageId: page.id, token, changes: allowed, before, at: new Date().toISOString() });
           const rows = Object.keys(allowed).map((k) => '  ' + k + ': ' + (String(before[k] || '(empty)')).slice(0, 120) + '  ->  ' + String(allowed[k]).slice(0, 120));
           return 'I will change ' + page.name + ':\n\n' + rows.join('\n') + '\n\nReply yes to apply, or no to leave it.';
         } catch (e) { return 'Could not stage that: ' + String(e.message || e).slice(0, 200); }
@@ -1641,6 +1668,18 @@ const SOCIAL_TOOLS = [
         imageUrl: { type: 'string', description: 'Optional public image URL for a photo post' },
         link: { type: 'string', description: 'Optional link for a text post' }
       }, required: ['message'] } } },
+  { type: 'function', function: {
+      name: 'schedule_view',
+      description: 'Which Page and Instagram account each daily slot uses right now, plus a reminder of the two posting times.',
+      parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: {
+      name: 'schedule_stage',
+      description: 'Prepare a change to which Page and Instagram account a daily slot posts to. Nothing is saved yet: it shows the current target and the new one and waits for yes. Slots are morning and evening; the promo slot has no cron of its own.',
+      parameters: { type: 'object', properties: {
+        slot: { type: 'string', description: 'morning or evening' },
+        page: { type: 'string' },
+        ig: { type: 'string', description: 'Instagram handle, or empty to post to Facebook only' }
+      }, required: ['slot', 'page'] } } },
   { type: 'function', function: {
       name: 'page_profile',
       description: 'Read what a connected Page says about itself: category, about, description, phone, website, emails, follower count. Use it before suggesting any change to the Page.',
@@ -4119,6 +4158,18 @@ async function postActionFromChat(verb, arg) {
     if (!pending) {
       const settings = await getPendingSettings();
       if (settings) {
+        if (settings.kind === 'schedule') {
+          if (v === 'no') { await clearPendingSettings(); return 'Left the ' + settings.slot + ' run on ' + settings.before.page + '.'; }
+          try {
+            const current = JSON.parse((await db.getSocial('daily_schedule').catch(() => '')) || '{}');
+            const entry = { page: settings.page, ig: settings.ig || '' };
+            await db.putSocial('daily_schedule', JSON.stringify({ ...current, [settings.slot]: entry }));
+            await clearPendingSettings();
+            return 'The ' + settings.slot + ' run now posts to ' + settings.page + (settings.ig ? ' and @' + settings.ig : ' (Facebook only)') + '.';
+          } catch (e) {
+            return 'Could not save that: ' + String((e && e.message) || e).slice(0, 200) + '\nIt is still waiting; say yes to retry or no to drop it.';
+          }
+        }
         if (v === 'no') { await clearPendingSettings(); return 'Left ' + settings.page + ' as it was.'; }
         try {
           const social = require('./lib/social');
