@@ -7,6 +7,7 @@ ok('a truncated key is named before any attempt is spent', /founderKeyProblem/.t
 ok('the server explains how long to wait', /try again in about ' \+ waitMin/.test(srv));
 ok('the server refuses a truncated key with its length', /looks truncated/.test(srv));
 ok('recovery allows ten tries an hour', /auth\/recover', rateLimit\(10, 3600e3\)/.test(srv));
-ok('the length check runs before the account lookup', srv.indexOf('looks truncated') < srv.indexOf('findUserByEmail'));
+const handler = srv.slice(srv.indexOf("api.post('/auth/recover'"), srv.indexOf("api.post('/auth/recover'") + 1600);
+ok('the length check runs before the account lookup', handler.indexOf('looks truncated') < handler.indexOf('findUserByEmail'));
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
