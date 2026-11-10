@@ -3073,6 +3073,7 @@ async function learnReview(opts) {
 }
 
 api.all('/learn-review', async (req, res) => {
+  await noteCron('learn-review');
   if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
   const q = { ...(req.query || {}), ...(req.body || {}) };
   const dry = String(q.dry === undefined ? '1' : q.dry) !== '0' && String(q.dry) !== 'false';
