@@ -958,6 +958,10 @@ const DEV_TOOLS = [
         branch: { type: 'string', description: 'Optional branch; the default branch when omitted' }
       }, required: ['repo', 'path', 'content'] } } },
   { type: 'function', function: {
+      name: 'github_repos',
+      description: 'The repositories the GitHub token can see, newest activity first, each marked writable or read only. Reading works on all of them; writing only where the allowlist permits.',
+      parameters: { type: 'object', properties: { limit: { type: 'number' } } } } },
+  { type: 'function', function: {
       name: 'github_overview',
       description: 'One repo at a glance: default branch, last push, open issues and PRs, language, description. repo is owner/name; the AgentX repo when omitted.',
       parameters: { type: 'object', properties: { repo: { type: 'string' } } } } },
@@ -1167,6 +1171,33 @@ async function runTool(name, args, ctx) {
         await docs.put('triggers', { ...t, active: action === 'resume' });
         return '"' + t.name + '" is now ' + (action === 'resume' ? 'active' : 'paused') + '.';
       }
+      case 'page_profile': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try {
+          const { social, page, token } = await pageTarget(args.page);
+          const d = await social.pageProfile(page.id, token);
+          const line = (k, label) => d[k] ? '  ' + label + ': ' + String(d[k]).slice(0, 300) + '\n' : '';
+          return page.name + ' (id ' + page.id + ')\n'
+            + line('category', 'category') + line('about', 'about') + line('description', 'description')
+            + line('phone', 'phone') + line('website', 'website') + line('emails', 'email')
+            + '  followers: ' + (d.followers_count == null ? 'not reported' : d.followers_count) + '\n'
+            + 'Editable here: ' + social.EDITABLE_FIELDS.join(', ') + '.';
+        } catch (e) { return 'Could not read the Page profile: ' + String(e.message || e).slice(0, 200); }
+      }
+      case 'page_stage_settings': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try {
+          const { social, page, token } = await pageTarget(args.page);
+          const wanted = args.changes && typeof args.changes === 'object' ? args.changes : {};
+          const allowed = {};
+          for (const k of Object.keys(wanted)) if (social.EDITABLE_FIELDS.includes(k)) allowed[k] = String(wanted[k]).slice(0, 2000);
+          if (!Object.keys(allowed).length) return 'Nothing there I can change. Allowed fields: ' + social.EDITABLE_FIELDS.join(', ') + '.';
+          const before = await social.pageProfile(page.id, token, Object.keys(allowed));
+          await setPendingSettings({ page: page.name, pageId: page.id, token, changes: allowed, before, at: new Date().toISOString() });
+          const rows = Object.keys(allowed).map((k) => '  ' + k + ': ' + (String(before[k] || '(empty)')).slice(0, 120) + '  ->  ' + String(allowed[k]).slice(0, 120));
+          return 'I will change ' + page.name + ':\n\n' + rows.join('\n') + '\n\nReply yes to apply, or no to leave it.';
+        } catch (e) { return 'Could not stage that: ' + String(e.message || e).slice(0, 200); }
+      }
       case 'page_recent_posts': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         try {
@@ -1296,7 +1327,7 @@ async function runTool(name, args, ctx) {
             'Reply yes to open it, or no to drop it.';
         } catch (e) { return 'Could not stage that: ' + String(e.message || e).slice(0, 200); }
       }
-      case 'github_overview': case 'github_branches': case 'github_prs': case 'github_pr':
+      case 'github_repos': case 'github_overview': case 'github_branches': case 'github_prs': case 'github_pr':
       case 'github_issues': case 'github_actions':
       case 'github_list': case 'github_file': case 'github_search_code':
       case 'github_commits': case 'render_deploy_status': case 'render_logs': {
@@ -1308,6 +1339,7 @@ async function runTool(name, args, ctx) {
           if (name === 'github_file') return await devtools.readFile(args.path, args.ref);
           if (name === 'github_search_code') return await devtools.searchCode(args.query);
           if (name === 'github_commits') return await devtools.commits(args.limit);
+          if (name === 'github_repos') return await devtools.listRepos(args.limit);
           if (name === 'github_overview') return await devtools.overview(args.repo);
           if (name === 'github_branches') return await devtools.branches(args.repo, args.limit);
           if (name === 'github_prs') return await devtools.pullRequests(args.repo, args.state, args.limit);
@@ -1609,6 +1641,17 @@ const SOCIAL_TOOLS = [
         imageUrl: { type: 'string', description: 'Optional public image URL for a photo post' },
         link: { type: 'string', description: 'Optional link for a text post' }
       }, required: ['message'] } } },
+  { type: 'function', function: {
+      name: 'page_profile',
+      description: 'Read what a connected Page says about itself: category, about, description, phone, website, emails, follower count. Use it before suggesting any change to the Page.',
+      parameters: { type: 'object', properties: { page: { type: 'string', description: 'Page name; the scheduled Page when omitted' } } } } },
+  { type: 'function', function: {
+      name: 'page_stage_settings',
+      description: 'Prepare a change to a Page profile. This changes NOTHING yet: it shows the current value and the new one and waits for the owner to answer yes. Only these fields can be changed: about, description, phone, website, emails, category, hours, personal_info.',
+      parameters: { type: 'object', properties: {
+        page: { type: 'string' },
+        changes: { type: 'object', description: 'Field to new value, e.g. {"about":"..."}' }
+      }, required: ['changes'] } } },
   { type: 'function', function: {
       name: 'page_recent_posts',
       description: 'Read the newest posts on a connected Facebook Page: text, date, link, and likes, comments and shares. Use it when the owner asks what is on the Page, what was posted, or how a post is doing. Read-only.',
@@ -2527,6 +2570,16 @@ app.get('/api/admin/ig-status', async (req, res) => {
     else out.verdict = 'Instagram publishes on a ' + (out.igToken.type || 'permanent') + ' token that never expires';
     return res.json({ ok: true, ...out });
   } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
+// Reads a Page profile so the settings tools can be proven from outside a chat.
+app.get('/api/admin/page-profile', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const { social, page, token } = await pageTarget(req.query.page);
+    const d = await social.pageProfile(page.id, token);
+    return res.json({ ok: true, page: page.name, profile: d, editable: social.EDITABLE_FIELDS });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 220) }); }
 });
 
 app.get('/api/admin/social', async (req, res) => {
@@ -3979,6 +4032,13 @@ const PENDING_KEY = 'pending_post_action';
 // Repo actions wait in their own slot. Sharing the Facebook slot meant a staged issue
 // could be confirmed by a yes meant for a caption edit, which is the exact mix-up the
 // gate exists to prevent.
+const PENDING_SETTINGS_KEY = 'pending_page_settings';
+async function getPendingSettings() {
+  try { return JSON.parse((await db.getSocial(PENDING_SETTINGS_KEY)) || 'null'); } catch (e) { return null; }
+}
+async function setPendingSettings(a) { await db.putSocial(PENDING_SETTINGS_KEY, JSON.stringify(a)); return a; }
+async function clearPendingSettings() { await db.putSocial(PENDING_SETTINGS_KEY, 'null'); }
+
 const PENDING_GITHUB_KEY = 'pending_github_action';
 async function getPendingGithub() {
   try { return JSON.parse((await db.getSocial(PENDING_GITHUB_KEY)) || 'null'); } catch (e) { return null; }
@@ -4057,6 +4117,18 @@ async function postActionFromChat(verb, arg) {
   if (v === 'yes' || v === 'no') {
     const pending = await getPendingAction();
     if (!pending) {
+      const settings = await getPendingSettings();
+      if (settings) {
+        if (v === 'no') { await clearPendingSettings(); return 'Left ' + settings.page + ' as it was.'; }
+        try {
+          const social = require('./lib/social');
+          const out = await social.updatePage(settings.pageId, settings.token, settings.changes);
+          await clearPendingSettings();
+          return 'Updated ' + settings.page + ': ' + Object.keys(out.applied).join(', ') + '.';
+        } catch (e) {
+          return 'Facebook refused it: ' + String((e && e.message) || e).slice(0, 200) + '\nIt is still waiting; say yes to retry or no to drop it.';
+        }
+      }
       const gh = await getPendingGithub();
       if (!gh) return 'Nothing is waiting for a yes.';
       if (v === 'no') {
