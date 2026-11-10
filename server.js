@@ -3226,6 +3226,14 @@ async function postDailyFromChat(ctx) {
 // what would go out, "post hadith" sends it now.
 async function previewHadithFromChat() {
   const hadith = require('./lib/hadith-daily');
+  // Today's narration may already be up: say so with its link rather than previewing
+  // tomorrow's and looking like today's.
+  const posted = await hadith.lastPost().catch(() => null);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  if (posted && posted.date === todayKey) {
+    const link = (posted.facebook && posted.facebook.url) || (posted.instagram && posted.instagram.permalink) || '';
+    return 'Today\'s hadith is already up: ' + posted.ref + ' on ' + (posted.page || 'the Page') + '.' + (link ? '\n' + link : '');
+  }
   const map = await dailySchedule();
   const slot = slotForNow();
   const target = map[slot] || map.morning;
