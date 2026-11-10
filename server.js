@@ -2915,6 +2915,22 @@ async function runSlotWorkflows(slot) {
   return out;
 }
 
+// What each slot last did, including the failures. Without this, "did today go out?" was
+// a question only Facebook could answer.
+api.get('/admin/daily-last', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
+  const out = {};
+  for (const slot of ['morning', 'evening']) {
+    try {
+      const raw = await db.getSocial('daily_last_' + slot);
+      out[slot] = raw ? JSON.parse(raw) : null;
+    } catch (e) { out[slot] = { error: String((e && e.message) || e).slice(0, 160) }; }
+  }
+  let cursor = null;
+  try { cursor = JSON.parse((await db.getSocial('daily_cursor')) || 'null'); } catch (e) {}
+  res.json({ ok: true, date: new Date().toISOString().slice(0, 10), slots: out, cursor });
+});
+
 api.get('/admin/daily-schedule', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   res.json({ ok: true, defaults: DAILY_DEFAULTS, schedule: await dailySchedule(), currentSlot: slotForNow() });

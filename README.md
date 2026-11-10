@@ -169,3 +169,13 @@ not when the run was prepared. A later `notify` step can quote what went out wit
 A workflow with `trigger: {type: "webhook"}` is given a token on save and started by
 `POST /api/hooks/<id>` with `x-hook-token` (or `?token=`). This is how a five-minute
 external pinger can drive a schedule Vercel's free plan cannot.
+
+### When a post fails
+
+The claim record is written only when something actually reached a channel. A run where
+Facebook and Instagram both refused leaves the slot open, says so in `claimSkipped`, and the
+next run tries again instead of spending the day. `GET /api/admin/daily-last` shows what each
+slot last did, including the error the platform returned.
+
+An approval stops at the first step that fails: later held steps are marked skipped with the
+reason, so a message saying "Posted ..." is never sent after a publish that did not happen.
