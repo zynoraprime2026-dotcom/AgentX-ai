@@ -101,3 +101,13 @@ const daily = require('./lib/daily');
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })();
+
+// ---- significance: a thin week reports but does not steer
+const thin = learn.review({ posts: [{ ref: '1:1', likes: 1 }], plan: PLAN, now: '2026-11-10T06:00:00Z' });
+const thinSig = learn.significance(thin);
+ok('one like is not evidence', thinSig.enough === false && /only 1 scored posts/.test(thinSig.reason), JSON.stringify(thinSig));
+const fat = learn.review({ posts: Array.from({ length: 14 }, () => ({ ref: '1:1', likes: 30, comments: 4 })), plan: PLAN });
+const fatSig = learn.significance(fat);
+ok('fourteen posts with real engagement is evidence', fatSig.enough === true, JSON.stringify(fatSig));
+const flat = learn.review({ posts: Array.from({ length: 20 }, () => ({ ref: '2:2', likes: 0 })), plan: PLAN });
+ok('volume with no engagement is still not evidence', learn.significance(flat).enough === false && /too flat/.test(learn.significance(flat).reason));

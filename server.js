@@ -2879,14 +2879,16 @@ async function learnReview(opts) {
   };
   out.weights = r.weights;
   if (o.dry === false) {
-    // Only a review with something behind it may rewrite the rotation. A quiet week must not
-    // reset weights to 1 and quietly undo the last one.
-    if (r.observed > 0) {
+    // Only a review with real signal behind it may rewrite the rotation. A quiet week must not
+    // reset weights to 1, and a thin one must not chase a coin flip.
+    const sig = learnLib.significance(r);
+    out.significance = sig;
+    if (sig.enough) {
       await db.putSocial('learn_weights', JSON.stringify({ at: r.at, weights: r.weights, observed: r.observed }));
       out.applied = true;
     } else {
       out.applied = false;
-      out.kept = 'no scored posts, so the previous weights stand';
+      out.kept = sig.reason + ', so the previous weights stand';
     }
     await db.putSocial('learn_review', JSON.stringify({ at: r.at, observed: r.observed, refs: r.refs, best: r.best, worst: r.worst, raised: r.raised, lowered: r.lowered }));
     out.alert = await alertOwner('AgentX weekly review\n' + summary);

@@ -348,3 +348,6 @@ with a dashboard. The summary says so in as many words.
 
 Tests: `node test-learn.js` (34 assertions, including the arithmetic, the window bounds and the
 rotation integration).
+- It only steers when there is signal: at least 12 scored posts and an average above 0.5 per
+  post (`learn.significance`). Under that it reports the numbers and leaves the rotation alone,
+  because one like on seven posts is a coin flip, not evidence.
