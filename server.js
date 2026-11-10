@@ -86,7 +86,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh', '/watchdog', '/learn-review'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh', '/watchdog', '/learn-review', '/reason'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 const keepAlive = { on: false, url: '', everyMinutes: 10 };
@@ -2817,6 +2817,76 @@ api.get('/cron/daily-post', async (req, res) => {
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
+// ---------- the reasoning layer ----------
+// Facts in, decisions out, each one naming the rule behind it. Nothing here writes anything: it
+// is the part that says WHAT should happen next, and the endpoints named in `how` are the doing.
+const reasonLib = require('./lib/reason');
+
+async function decideNow(opts) {
+  const o = opts || {};
+  const q = new Date();
+  const dateKey = q.toISOString().slice(0, 10);
+  const schedule = await dailySchedule();
+  const claims = await readClaims();
+  const due = {};
+  for (const slot of ['morning', 'evening', 'promo']) {
+    const at = auditLib.slotDueAt(slot, dateKey);
+    due[slot] = at ? at.toISOString() : '';
+  }
+
+  let token = null;
+  try {
+    const instagram = require('./lib/instagram');
+    instagram.setToken(await getPageToken());
+    instagram.setIgToken((await db.getSocial('meta_ig_token')) || '');
+    token = await instagram.tokenInfo();
+  } catch (e) { token = { valid: false, error: String((e && e.message) || e).slice(0, 120) }; }
+
+  let engagement = null;
+  let significance = null;
+  if (o.withEngagement !== false) {
+    try {
+      const { posts } = await reviewPages();
+      const t = learnLib.tally(posts);
+      engagement = { observed: t.rows.reduce((n, r) => n + r.posts, 0), refs: t.refs, mean: t.mean, best: t.best, worst: t.worst };
+      significance = learnLib.significance(engagement);
+    } catch (e) { engagement = { error: String((e && e.message) || e).slice(0, 140) }; }
+  }
+
+  let weights = null;
+  try { weights = learnLib.weightsFrom(await db.getSocial('learn_weights')); } catch (e) { weights = null; }
+
+  const facts = {
+    now: q.toISOString(),
+    dateKey,
+    schedule,
+    claims,
+    due,
+    token,
+    engagement,
+    weights: weights ? { at: weights.at } : null,
+    facts: significance && significance.enough ? { 'learning-ready': true } : {}
+  };
+  const result = reasonLib.decide(facts);
+  return {
+    at: facts.now,
+    significance,
+    token,
+    engagement: engagement && !engagement.error ? { observed: engagement.observed, mean: engagement.mean, best: engagement.best && engagement.best.ref } : engagement,
+    decisions: result.decisions,
+    fired: result.fired,
+    summary: reasonLib.explain(result)
+  };
+}
+
+api.get('/reason', async (req, res) => {
+  if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const out = await decideNow({ withEngagement: String(req.query.engagement || '1') !== '0' });
+    return res.json({ ok: true, ...out });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
 // ---------- the weekly review ----------
 // The numbers every post already carries are read back once a week, and the rotation is biased
 // toward the verses that earned attention. Read-only by default: without dry=0 it reports what
@@ -2862,7 +2932,11 @@ async function learnReview(opts) {
   const o = opts || {};
   const { posts, pages, problems } = await reviewPages();
   const r = learnLib.review({ posts, plan: daily.PLAN, now: o.now });
-  const summary = learnLib.summarise(r, pages.concat(problems));
+  let summary = learnLib.summarise(r, pages.concat(problems));
+  try {
+    const decided = await decideNow({ withEngagement: false });
+    if (decided.decisions.length) summary += '\n\nWhat follows from it:\n' + reasonLib.explain(decided);
+  } catch (e) { /* the review still stands without it */ }
   const out = {
     dry: o.dry !== false,
     at: r.at,

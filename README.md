@@ -351,3 +351,24 @@ rotation integration).
 - It only steers when there is signal: at least 12 scored posts and an average above 0.5 per
   post (`learn.significance`). Under that it reports the numbers and leaves the rotation alone,
   because one like on seven posts is a coin flip, not evidence.
+
+## The reasoning layer
+
+Facts in, decisions out, and every decision names the rule that produced it. No model is in the
+loop: a decision that cannot show its facts is not a decision this pipeline is allowed to act on.
+
+- `GET /api/reason` (`?engagement=0` to skip the Page reads) gathers the day's facts: each slot's
+  claim against the schedule, what was due and whether it passed, the Instagram token's remaining
+  days, the week's engagement, and the age of the stored weights.
+- Seven rules fire over those facts, then run a bounded forward chain so a fact derived in one
+  place can enable a decision in another (`learning-ready` from the review enables
+  `apply-learning`).
+- Order is deliberate: a post on the wrong Page outranks a token with days left, which outranks a
+  missing slot, which outranks content advice, which outranks housekeeping.
+- A rule that throws is skipped, never fatal, so the reasoning layer cannot take the scheduler
+  down with it.
+- The weekly review now ends with "What follows from it" and the top decisions, so the numbers
+  are never delivered without their consequence.
+
+Tests: `node test-reason.js` (22 assertions), including every rule firing and not firing, the
+priority order, the chain, and a deliberately explosive rule.
