@@ -1265,7 +1265,7 @@ async function runTool(name, args, ctx) {
           const repo = String(args.repo || devtools.REPO);
           const title = String(args.title || '').trim();
           if (!title) return 'An issue needs a title.';
-          await setPendingAction({
+          await setPendingGithub({
             kind: 'github_issue', repo, title,
             body: String(args.body || ''),
             labels: Array.isArray(args.labels) ? args.labels.slice(0, 5) : [],
@@ -1284,7 +1284,7 @@ async function runTool(name, args, ctx) {
           const head = String(args.head || '').trim();
           if (!title) return 'A pull request needs a title.';
           if (!head) return 'Name the branch holding the change; commit it with github_write_file first.';
-          await setPendingAction({
+          await setPendingGithub({
             kind: 'github_pr', repo, title, head,
             base: String(args.base || 'main'),
             body: String(args.body || ''),
@@ -3967,6 +3967,16 @@ api.post('/admin/post-delete', async (req, res) => {
 // the action is staged, the owner is shown exactly what will change, and a yes applies it.
 const PENDING_KEY = 'pending_post_action';
 
+// Repo actions wait in their own slot. Sharing the Facebook slot meant a staged issue
+// could be confirmed by a yes meant for a caption edit, which is the exact mix-up the
+// gate exists to prevent.
+const PENDING_GITHUB_KEY = 'pending_github_action';
+async function getPendingGithub() {
+  try { return JSON.parse((await db.getSocial(PENDING_GITHUB_KEY)) || 'null'); } catch (e) { return null; }
+}
+async function setPendingGithub(a) { await db.putSocial(PENDING_GITHUB_KEY, JSON.stringify(a)); return a; }
+async function clearPendingGithub() { await db.putSocial(PENDING_GITHUB_KEY, 'null'); }
+
 async function getPendingAction() {
   try { return JSON.parse((await db.getSocial(PENDING_KEY)) || 'null'); } catch (e) { return null; }
 }
@@ -4037,26 +4047,34 @@ async function postActionFromChat(verb, arg) {
 
   if (v === 'yes' || v === 'no') {
     const pending = await getPendingAction();
-    if (!pending) return 'Nothing is waiting for a yes.';
+    if (!pending) {
+      const gh = await getPendingGithub();
+      if (!gh) return 'Nothing is waiting for a yes.';
+      if (v === 'no') {
+        await clearPendingGithub();
+        return 'Left it alone. Nothing was opened on ' + gh.repo + '.';
+      }
+      try {
+        const devtools = require('./lib/devtools');
+        const done = gh.kind === 'github_issue'
+          ? await devtools.openIssue({ repo: gh.repo, title: gh.title, body: gh.body, labels: gh.labels })
+          : await devtools.openPull({ repo: gh.repo, title: gh.title, head: gh.head, base: gh.base, body: gh.body, draft: gh.draft });
+        await clearPendingGithub();
+        return (gh.kind === 'github_issue' ? 'Issue #' : 'Pull request #') + done.number + ' is open on ' + done.repo + '.\n' + done.url;
+      } catch (e) {
+        // still staged, so a retry is one more yes
+        return 'GitHub refused it: ' + String((e && e.message) || e).slice(0, 200) + '\nIt is still waiting; say yes to retry or no to drop it.';
+      }
+    }
     if (v === 'no') {
       await clearPendingAction();
-      return 'Left it alone. Nothing changed on ' + pending.page + '.';
+      return 'Left it alone. Nothing changed on ' + (pending.page || 'the Page') + '.';
     }
     try {
       if (pending.kind === 'edit') {
         await social.editPostMessage(pending.postId, pending.newMessage, pending.token);
         await clearPendingAction();
         return 'Caption updated on ' + pending.page + '.' + (pending.url ? '\n' + pending.url : '');
-      }
-      if (pending.kind === 'github_issue' || pending.kind === 'github_pr') {
-        // Only now does anything reach GitHub, and only because the owner said yes.
-        const devtools = require('./lib/devtools');
-        const done = pending.kind === 'github_issue'
-          ? await devtools.openIssue({ repo: pending.repo, title: pending.title, body: pending.body, labels: pending.labels })
-          : await devtools.openPull({ repo: pending.repo, title: pending.title, head: pending.head, base: pending.base, body: pending.body, draft: pending.draft });
-        await clearPendingAction();
-        return (pending.kind === 'github_issue' ? 'Issue #' : 'Pull request #') + done.number +
-          ' is open on ' + done.repo + '.\n' + done.url;
       }
       if (pending.kind === 'comment_reply' || pending.kind === 'comment_delete') {
         const done = await applyCommentAction(pending);

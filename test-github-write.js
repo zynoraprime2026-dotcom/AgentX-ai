@@ -53,5 +53,19 @@ function stub(status, body) {
   global.fetch = origFetch;
   if (token) process.env.GITHUB_TOKEN = token;
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
-  process.exit(fail ? 1 : 0);
+  /* shape checks below still run */
 })();
+
+// A staged repo action waits in its own slot, so a yes meant for a caption edit can
+// never open an issue on GitHub instead.
+const src = require('fs').readFileSync(__dirname + '/server.js', 'utf8');
+let pass2 = 0, fail2 = 0;
+const ok2 = (n, c) => { if (c) pass2++; else { fail2++; console.log('FAIL:', n); } };
+ok2('issue waits in the repo slot', /setPendingGithub\(\{\s*kind: 'github_issue'/.test(src));
+ok2('pull request waits in the repo slot', /setPendingGithub\(\{\s*kind: 'github_pr'/.test(src));
+ok2('repo slot is a separate records key', /PENDING_GITHUB_KEY = 'pending_github_action'/.test(src));
+ok2('a yes reads the repo slot when the Page slot is empty', /const gh = await getPendingGithub\(\)/.test(src));
+ok2('a no clears the repo slot too', /clearPendingGithub\(\)/.test(src));
+ok2('the repo slot is never written into the Page slot', !/setPendingAction\(\{\s*kind: 'github_/.test(src));
+console.log(pass2 + ' passed, ' + fail2 + ' failed');
+process.exit(fail2 ? 1 : 0);
