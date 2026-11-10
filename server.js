@@ -89,7 +89,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh', '/watchdog', '/learn-review', '/reason'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/auth/link', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh', '/watchdog', '/learn-review', '/reason'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 const keepAlive = { on: false, url: '', everyMinutes: 10 };
@@ -168,6 +168,43 @@ api.post('/auth/login', rateLimit(10, 900e3), async (req, res) => {
 
 // Founder-key recovery: no email provider is involved, so the founder key is the
 // reset channel. This is the only way back in for an account whose password is lost.
+// A one-time sign-in link, because the founder key is sealed inside Vercel and cannot be read
+// back by anyone, including the owner, once it has been saved. The admin key mints a single-use
+// token that expires in fifteen minutes; using it creates a normal session and burns the token.
+api.post('/admin/login-link', async (req, res) => {
+  if (!adminKeyOk(req)) return res.status(403).json({ error: 'admin key required' });
+  try {
+    const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+    const u = await db.findUserByEmail(email);
+    if (!u) return res.status(404).json({ error: 'no account with that email' });
+    const token = crypto.randomBytes(24).toString('hex');
+    await db.putSocial('login_link', JSON.stringify({ token, email, expires: new Date(Date.now() + 15 * 60000).toISOString() }));
+    return res.json({ ok: true, email, url: '/api/auth/link?t=' + token, expiresInMinutes: 15 });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 200) }); }
+});
+
+api.get('/auth/link', async (req, res) => {
+  try {
+    const raw = await db.getSocial('login_link').catch(() => '');
+    if (!raw) return res.status(400).send('That link was already used or never existed.');
+    let rec = null;
+    try { rec = JSON.parse(String(raw)); } catch (e) { rec = null; }
+    if (!rec || !rec.token || rec.token !== String(req.query.t || '')) return res.status(400).send('That link is not valid.');
+    if (new Date(rec.expires).getTime() < Date.now()) {
+      await db.putSocial('login_link', '').catch(() => {});
+      return res.status(400).send('That link has expired. Ask for a fresh one.');
+    }
+    const u = await db.findUserByEmail(rec.email);
+    if (!u) return res.status(404).send('That account no longer exists.');
+    await db.putSocial('login_link', '').catch(() => {}); // single use, spent here
+    const token = crypto.randomBytes(24).toString('hex');
+    const sess = { user: { id: u.id, email: u.email, name: u.name, founder: Boolean(u.founder) }, expires: new Date(Date.now() + 30 * 864e5).toISOString() };
+    await db.putSession(token, sess);
+    res.setHeader('Set-Cookie', 'agx_sess=' + token + '; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax');
+    return res.redirect('/');
+  } catch (e) { return res.status(500).send('Could not sign in: ' + String((e && e.message) || e).slice(0, 120)); }
+});
+
 api.post('/auth/recover', rateLimit(10, 3600e3), async (req, res) => {
   // A founder key is fixed in length, so a short one is a bad paste, not a wrong secret: say
   // so plainly and do not make the person guess.
