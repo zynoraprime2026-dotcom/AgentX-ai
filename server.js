@@ -111,7 +111,7 @@ async function loadSession(req) {
 api.use(async (req, res, next) => {
   if (PUBLIC_API.includes(req.path)) return next();
   if (req.path.startsWith('/admin/') || req.path.startsWith('/connectors') ||
-      req.path.startsWith('/workflows') || req.path.startsWith('/runs')) {
+      req.path.startsWith('/workflows') || req.path.startsWith('/runs') || req.path.startsWith('/hooks')) {
     // Admin and connector paths are guarded by the x-admin-key header or a founder
     // session, so attach the session user when there is one but never reject here.
     const [, adminSess] = await loadSession(req);
@@ -2758,7 +2758,7 @@ api.get('/cron/daily-post', async (req, res) => {
 // A workflow is a trigger plus steps; the run log is why anyone can trust it. Nothing here
 // reaches a stranger: the only outbound step is a notify, and notify waits for the owner's
 // approval unless the workflow was created with approval:false on purpose.
-const workflows = require('./lib/workflows');
+const workflowsLib = require('./lib/workflows');
 
 async function workflowDeps() {
   const settings = await db.getSettings();
@@ -2776,7 +2776,33 @@ async function workflowDeps() {
         { role: 'user', content: prompt }
       ]
     }),
-    notify: async (text) => (await alertOwner(text)).length > 0
+    notify: async (text) => (await alertOwner(text)).length > 0,
+    // The one step that changes the outside world. It goes through the same daily
+    // pipeline as the cron, so the claim, the cursor and the duplicate guard all still
+    // apply, and a workflow cannot publish the same ayah twice in a day.
+    publish: async ({ slot }) => {
+      const wantSlot = slot || slotForNow();
+      const deps = await dailyDeps(wantSlot);
+      try {
+        const pgTok = await getPageToken();
+        deps.social.setToken(pgTok);
+        if (deps.instagram) deps.instagram.setToken(pgTok);
+      } catch (e) { /* tokens may already be installed by another path */ }
+      const out = await daily.run({ ...deps, slot: wantSlot, force: true });
+      const links = {};
+      if (out.facebook && out.facebook.url) links.facebook = out.facebook.url;
+      if (out.instagram && out.instagram.permalink) links.instagram = out.instagram.permalink;
+      return {
+        ok: Boolean(out.ok),
+        slot: out.slot,
+        ref: out.ref,
+        url: links.facebook || links.instagram || '',
+        links,
+        steps: out.steps,
+        skipped: out.skipped,
+        error: !out.ok && out.skipped ? out.skipped : ''
+      };
+    }
   };
 }
 
@@ -2789,7 +2815,7 @@ api.get('/workflows', async (req, res) => {
 api.post('/workflows', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
-    const saved = await workflows.save({ ...(req.body || {}), createdBy: (req.user && req.user.email) || 'admin-key' });
+    const saved = await workflowsLib.save({ ...(req.body || {}), createdBy: (req.user && req.user.email) || 'admin-key' });
     return res.json({ ok: true, workflow: saved });
   } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 300) }); }
 });
@@ -2807,11 +2833,34 @@ api.post('/workflows/:id/run', async (req, res) => {
   const wf = await db.getWorkflow(String(req.params.id));
   if (!wf) return res.status(404).json({ error: 'no such workflow: ' + req.params.id });
   try {
-    const out = await workflows.execute(wf, {
+    const out = await workflowsLib.execute(wf, {
       deps: await workflowDeps(),
       trigger: 'manual',
       input: (req.body && req.body.input) || {},
       approved: String((req.body && req.body.approved) || '') === '1'
+    });
+    return res.json({ ok: out.status !== 'failed', run: out });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 300) }); }
+});
+
+// A workflow with a webhook trigger can be started by anything that can send a POST:
+// cron-job.org, a Zapier step, another service. The token is per workflow and compared
+// in constant time, so a leak of one does not open the others.
+api.post('/hooks/:id', async (req, res) => {
+  try {
+    const wfDef = await workflowsLib.get(req.params.id);
+    if (!wfDef || wfDef.trigger.type !== 'webhook') return res.status(404).json({ error: 'no such hook' });
+    if (wfDef.enabled === false) return res.status(409).json({ error: 'workflow is disabled' });
+    const given = String(req.headers['x-hook-token'] || (req.query && req.query.token) || '');
+    const want = String(wfDef.trigger.token || '');
+    const a = Buffer.from(given), b = Buffer.from(want);
+    if (!want || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return res.status(401).json({ error: 'bad hook token' });
+    }
+    const out = await workflowsLib.execute(wfDef, {
+      deps: await workflowDeps(),
+      trigger: 'webhook',
+      input: (req.body && req.body.input) || {}
     });
     return res.json({ ok: out.status !== 'failed', run: out });
   } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 300) }); }
@@ -2835,8 +2884,8 @@ api.post('/runs/:id/:decision(approve|reject)', async (req, res) => {
     const id = String(req.params.id);
     if (!['approve', 'reject'].includes(req.params.decision)) return res.status(400).json({ error: 'decision must be approve or reject' });
     const out = req.params.decision === 'approve'
-      ? await workflows.approve(id, { deps: await workflowDeps() })
-      : await workflows.reject(id);
+      ? await workflowsLib.approve(id, { deps: await workflowDeps() })
+      : await workflowsLib.reject(id);
     return res.json({ ok: true, run: out });
   } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 300) }); }
 });
@@ -2844,13 +2893,13 @@ api.post('/runs/:id/:decision(approve|reject)', async (req, res) => {
 // Runs every enabled workflow attached to this cron slot, and reports each one. A failing
 // workflow must not stop the others or the daily post that already went out.
 async function runSlotWorkflows(slot) {
-  const due = await workflows.dueForSlot(slot).catch(() => []);
+  const due = await workflowsLib.dueForSlot(slot).catch(() => []);
   if (!due.length) return [];
   const deps = await workflowDeps();
   const out = [];
   for (const wf of due) {
     try {
-      const run = await workflows.execute(wf, { deps, trigger: 'cron:' + slot });
+      const run = await workflowsLib.execute(wf, { deps, trigger: 'cron:' + slot });
       out.push({ id: wf.id, status: run.status, runId: run.id, error: run.error || '' });
       if (run.status === 'pending_approval') {
         const held = (run.steps || []).filter((s) => s.status === 'held').map((s) => s.text).join('\n\n');
@@ -3107,7 +3156,7 @@ async function workflowFromChat(verb, arg) {
     if (!id) return 'Which workflow? Send: run <id>';
     const wf = await db.getWorkflow(id);
     if (!wf) return 'No workflow called "' + id + '". Send workflows to see them.';
-    const out = await workflows.execute(wf, { deps: await workflowDeps(), trigger: 'chat' });
+    const out = await workflowsLib.execute(wf, { deps: await workflowDeps(), trigger: 'chat' });
     const head = 'Ran "' + wf.name + '": ' + out.status + ' (#' + out.id + ').';
     const err = out.error ? '\n' + String(out.error).slice(0, 200) : '';
     const held = (out.steps || []).filter((s) => s.status === 'held').map((s) => s.text).join('\n\n');
@@ -3119,8 +3168,8 @@ async function workflowFromChat(verb, arg) {
     if (!id) return 'Which run? Send: ' + v + ' <number>';
     try {
       const out = v === 'approve'
-        ? await workflows.approve(id, { deps: await workflowDeps() })
-        : await workflows.reject(id);
+        ? await workflowsLib.approve(id, { deps: await workflowDeps() })
+        : await workflowsLib.reject(id);
       return (v === 'approve' ? 'Sent. Run #' : 'Rejected. Run #') + out.id + ' is now ' + out.status + '.';
     } catch (e) { return String((e && e.message) || e).slice(0, 200); }
   }

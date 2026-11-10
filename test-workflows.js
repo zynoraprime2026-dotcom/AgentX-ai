@@ -30,7 +30,7 @@ const threw = (fn, re) => { try { fn(); return false; } catch (e) { return !re |
   // ---- definition rules
   ok('needs an id', threw(() => wf.validate({ steps: [{ type: 'notify', text: 'x' }] }), /needs an id/));
   ok('needs steps', threw(() => wf.validate({ id: 'a', steps: [] }), /at least one step/));
-  ok('rejects unknown step types', threw(() => wf.validate({ id: 'a', steps: [{ type: 'publish' }] }), /type must be one of/));
+  ok('rejects unknown step types', threw(() => wf.validate({ id: 'a', steps: [{ type: 'shell' }] }), /type must be one of/));
   ok('rejects a foreign host', threw(() => wf.validate({ id: 'a', steps: [{ type: 'http', url: 'https://evil.example/x' }] }), /not in WORKFLOW_HOSTS/));
   ok('rejects plain http', threw(() => wf.validate({ id: 'a', steps: [{ type: 'http', url: 'http://ilm-api.vercel.app/x' }] }), /only https/));
   ok('agent step needs a prompt', threw(() => wf.validate({ id: 'a', steps: [{ type: 'agent' }] }), /needs a prompt/));
@@ -144,6 +144,53 @@ const threw = (fn, re) => { try { fn(); return false; } catch (e) { return !re |
   const morning = await wf.dueForSlot('morning');
   ok('dueForSlot picks the slot', morning.some((w) => w.id === 'slot-a') && !morning.some((w) => w.id === 'slot-b'), morning.map((w) => w.id).join(','));
   ok('dueForSlot skips disabled workflows', !morning.some((w) => w.id === 'off'));
+
+// ---------- publishing, and what may reach the Page ----------
+  ok('a publish step cannot be saved without the gate',
+    threw(() => wf.validate({ id: 'p', steps: [{ type: 'publish', slot: 'morning' }], approval: false })));
+
+  const clean = wf.validate({ id: 'p', steps: [{ type: 'publish', slot: 'morning' }] });
+  ok('publish therefore saves with approval on', clean.approval === true);
+
+  ok('a bad publish slot is refused',
+    threw(() => wf.validate({ id: 'p', steps: [{ type: 'publish', slot: 'midnight' }] })));
+
+  const hooked = wf.validate({ id: 'h', trigger: { type: 'webhook' }, steps: [{ type: 'notify', text: 'hi' }] });
+  ok('a webhook trigger is given a token', typeof hooked.trigger.token === 'string' && hooked.trigger.token.length >= 20);
+
+  ok('an unknown trigger type is refused',
+    threw(() => wf.validate({ id: 't', trigger: { type: 'pigeon' }, steps: [{ type: 'notify', text: 'x' }] })));
+
+  // The whole path: held, approved, posted once, and the post's link available to a
+  // later notify step without re-running anything.
+  const posts = [];
+  const notes = [];
+  const pubDeps = {
+    publish: async ({ slot }) => { posts.push(slot); return { ok: true, slot, ref: '39:53', url: 'https://facebook.com/p/1', steps: ['facebook'] }; },
+    notify: async (t) => { notes.push(t); return true; }
+  };
+  const wfPub = await wf.save({
+    id: 'pub-test', approval: true,
+    steps: [
+      { type: 'publish', slot: 'morning', save: 'post' },
+      { type: 'notify', text: 'Posted {{steps.post.ref}} — {{steps.post.url}}' }
+    ]
+  });
+  const first = await wf.execute(wfPub, { deps: pubDeps });
+  ok('nothing is posted before approval', posts.length === 0 && first.status === 'pending_approval');
+  ok('the held publish reads as a sentence', (first.steps[0].text || '').includes('Publish the morning post'));
+
+  const gated = await wf.approve(first.id, { deps: pubDeps });
+  ok('approving posts exactly once', posts.length === 1 && posts[0] === 'morning');
+  ok('the run records what was published', gated.status === 'approved' && gated.steps[0].value.ref === '39:53');
+  ok('a later notify can quote the post', (notes[0] || '').includes('39:53') && (notes[0] || '').includes('facebook.com'),
+    notes[0]);
+
+  ok('a rejected publish never posts', await (async () => {
+    const r = await wf.execute(wfPub, { deps: pubDeps });
+    await wf.reject(r.id);
+    return posts.length === 1;
+  })());
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);

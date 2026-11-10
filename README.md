@@ -154,3 +154,18 @@ workflow cannot publish to a Page yet, because the approval gate comes before th
 Tests: `node test-workflows.js` (40 assertions: definition rules, templating, conditions, ordered
 steps, failure stops later steps, allowFailure, the approval gate and reject, and cron slot
 selection).
+
+### Publishing from a workflow
+
+A `publish` step posts the daily ayah through the same pipeline as the cron, so the daily
+claim, the verse cursor and the Page duplicate guard all still apply: a workflow cannot
+post the same ayah twice in a day. It cannot be saved with `approval: false`; the run holds
+the publish, shows "Publish the morning post", and the post happens when the owner approves,
+not when the run was prepared. A later `notify` step can quote what went out with
+`{{steps.<save>.url}}` and `{{steps.<save>.ref}}`.
+
+### Webhook triggers
+
+A workflow with `trigger: {type: "webhook"}` is given a token on save and started by
+`POST /api/hooks/<id>` with `x-hook-token` (or `?token=`). This is how a five-minute
+external pinger can drive a schedule Vercel's free plan cannot.
