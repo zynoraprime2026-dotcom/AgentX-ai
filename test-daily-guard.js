@@ -44,12 +44,13 @@ function deps(extra) {
   pagePosts.unshift({ message: planned.caption, created_time: 'earlier-today' });
   const guarded = await daily.run(deps({ force: true }));
   ok('guard sees the copy already on the Page', !!guarded.guard, guarded.guard);
-  ok('guard moved past it', guarded.ref !== nextRef, guarded.ref);
-  ok('guard still published something', guarded.ok === true);
+  ok('guard refuses to post it again', guarded.ok === false && !guarded.facebook, JSON.stringify(guarded.facebook));
+  ok('guard calls the slot done', String(guarded.skipped || '').includes('already on the page'), guarded.skipped);
+  ok('guard records the slot so it is not retried', guarded.claimSaved === true, JSON.stringify(guarded.claimError || ''));
 
   // 4. preview advances after publishing
   const after = await daily.upcoming(1, D);
-  ok('preview follows the cursor', after[0].ref !== nextRef, after[0].ref);
+  ok('a skipped slot does not move the cursor', after[0].ref === nextRef, after[0].ref + ' vs ' + nextRef);
 
   // 5. guard can be switched off, and a failing guard never blocks a post
   const off = await daily.run(deps({ guard: false, force: true }));

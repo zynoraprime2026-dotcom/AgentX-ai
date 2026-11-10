@@ -179,3 +179,15 @@ slot last did, including the error the platform returned.
 
 An approval stops at the first step that fails: later held steps are marked skipped with the
 reason, so a message saying "Posted ..." is never sent after a publish that did not happen.
+
+### Two bugs worth remembering
+
+`slotForNow()` accepted a slot name and passed it to `new Date()`. "morning" is an Invalid
+Date, its hours are NaN, and `NaN < 12` is false, so every scheduled run resolved to the
+evening target: a whole day landed on Hikmah Hub while The salafi Da'wah stayed empty. It
+now returns an explicit slot unchanged and falls back to the clock only for dates.
+
+The duplicate guard used to move on to the next verse when today's copy was already on the
+Page, which posted a second time in the same slot (two appeared seventeen minutes apart).
+It now treats the slot as done, records that decision with the time the copy was seen, and
+leaves the cursor alone.

@@ -2686,8 +2686,14 @@ async function dailySchedule() {
   return map;
 }
 
-function slotForNow(date) {
-  const t = date ? new Date(date) : new Date();
+// Accepts a slot name or a date. Passing "morning" into new Date() gives an Invalid
+// Date, whose hours are NaN, and NaN < 12 is false: every scheduled run then resolved to
+// the evening target, which is how a whole day landed on the wrong Page.
+function slotForNow(when) {
+  if (when === 'morning' || when === 'evening') return when;
+  const t = when ? new Date(when) : new Date();
+  const stamp = t.getTime();
+  if (Number.isNaN(stamp)) return new Date().getUTCHours() < 12 ? 'morning' : 'evening';
   return t.getUTCHours() < 12 ? 'morning' : 'evening';
 }
 
