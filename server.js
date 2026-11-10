@@ -1555,6 +1555,12 @@ async function groqAsk(agent, history, ctx) {
   const smallTalk = lastSaid.length < 30 && /^(hi|hey|hello|yo|salam|salaam|assalam[ou]?\s*alaikum|good (morning|afternoon|evening)|thanks|thank you|ok|okay|test)\b/i.test(lastSaid);
   let toolsOn = !smallTalk;
 
+  // A greeting gets an answer even when every model lane is down, and it costs nothing.
+  try {
+    const small = require('./lib/smalltalk').answer(lastSaid);
+    if (small) return { reply: small.reply, model: 'smalltalk' };
+  } catch (e) { /* never the reason a message goes unanswered */ }
+
   // Both providers share one retry shape: wait out a per-minute budget, and drop
   // the tools rather than fail when a tool call is rejected.
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -1623,7 +1629,9 @@ async function groqAsk(agent, history, ctx) {
         busy.raw = out.error;
         throw busy;
       }
-      throw new Error(String(out.error || 'The model request failed'));
+      // Name the lanes: "try asking it differently" is wrong when the fault is upstream.
+      const lanes = (out.attempts || []).map((a) => a.provider + ' ' + (a.status || '') + ' ' + String(a.error || '').trim().slice(0, 70)).join('; ');
+      throw new Error('No model answered just now' + (lanes ? ' (' + lanes + ')' : '') + '. The rest of the dashboard is unaffected.');
     }
     const calls = out.calls || [];
     const text = String(out.text || '').trim();
@@ -2881,6 +2889,33 @@ api.get('/cron/daily-post', async (req, res) => {
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
+// Which model lanes actually work, asked with the deployed keys. A configured key is not a
+// working key: this is the difference between "the agent is being difficult" and "the Groq key
+// was rotated and the Gemini budget is gone".
+api.get('/api/admin/providers', async (req, res) => {
+  if (!(await cronOk(req)) && !isFounderOrKey(req)) return res.status(401).json({ error: 'unauthorized' });
+  const probe = async (url, headers) => {
+    const started = Date.now();
+    try {
+      const r = await fetch(url, { headers, signal: AbortSignal.timeout(12000) });
+      const body = await r.json().catch(() => ({}));
+      const err = body && body.error ? (body.error.message || body.error) : '';
+      return { ok: r.ok, status: r.status, ms: Date.now() - started, error: r.ok ? '' : String(err || '').slice(0, 160), items: Array.isArray(body && body.data) ? body.data.length : (Array.isArray(body && body.models) ? body.models.length : 0) };
+    } catch (e) { return { ok: false, status: 0, ms: Date.now() - started, error: String((e && e.message) || e).slice(0, 160), items: 0 }; }
+  };
+  const gk = String(process.env.GEMINI_API_KEY || '').trim();
+  const qk = String(process.env.GROQ_API_KEY || '').trim();
+  const out = {
+    gemini: gk ? await probe('https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(gk), {}) : { keySet: false, ok: false, error: 'GEMINI_API_KEY is not set' },
+    groq: qk ? await probe('https://api.groq.com/openai/v1/models', { Authorization: 'Bearer ' + qk, 'User-Agent': 'AgentX/1.0' }) : { keySet: false, ok: false, error: 'GROQ_API_KEY is not set' }
+  };
+  out.gemini.keySet = Boolean(gk);
+  out.groq.keySet = Boolean(qk);
+  out.verdict = out.gemini.ok ? 'Gemini answers; Groq is the spare'
+    : (out.groq.ok ? 'Gemini is failing, Groq is carrying replies' : 'Neither lane is working, so only commands and small talk will answer');
+  return res.json({ ok: true, ...out });
+});
+
 // ---------- the reasoning layer ----------
 // Facts in, decisions out, each one naming the rule behind it. Nothing here writes anything: it
 // is the part that says WHAT should happen next, and the endpoints named in `how` are the doing.
