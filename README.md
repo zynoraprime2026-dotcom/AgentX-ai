@@ -238,3 +238,26 @@ Staged actions live in `agx_social.pending_post_action`, owner-only through `ctx
 Comment replies and Page details still need `pages_manage_engagement` and
 `pages_manage_metadata`, which the token does not carry. Tests: `node test-post-edit.js`
 (23 assertions).
+
+## The daily audit
+
+Every cron run ends by asking a question success cannot answer: did each slot post what it
+was supposed to, on the Page it was supposed to? `lib/audit.js` compares each slot's claim
+with that slot's configured Page and reports:
+
+- `missing`: a slot whose time has passed (plus a 45-minute grace) with no post today.
+- `wrong_page`: the post landed on a different Page than the schedule names. This is the
+  incident it was written for: a whole day went to Hikmah Hub and every run said success.
+- `unknown_page`: posted, but the claim never recorded where. A warning, not a failure.
+
+The cron alerts the owner when anything but `unknown_page` appears. `GET /api/admin/audit`
+returns the same findings as JSON, and "audit" or "did today go out" asks for it in AgentX's
+chat.
+
+## Engagement, on request
+
+"engagement", "stats", "analytics", "how did the posts do" and `/engagement` read the Page's
+own numbers (reactions, comments, shares from the posts endpoint) and list the recent posts
+best first, scoring a comment above a reaction and a share above both. Owner-only.
+
+Tests: `node test-audit.js` (15 assertions); command routing in `test-commands-hadith.js`.

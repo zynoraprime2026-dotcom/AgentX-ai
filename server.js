@@ -2770,9 +2770,48 @@ api.get('/cron/daily-post', async (req, res) => {
       }
     }
     out.workflows = await runSlotWorkflows(String(req.query.slot || '') || out.slot || '');
+    // Last word of the run: does the day actually look right? A post that went out to the
+    // wrong Page reports success, so success alone is not the check.
+    try {
+      const audit = await dailyAudit();
+      out.audit = audit;
+      if (!audit.ok) {
+        await alertOwner('Daily audit: something does not line up\n' + auditLib.describe(audit.findings));
+      }
+    } catch (e) { out.auditError = String((e && e.message) || e).slice(0, 160); }
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
+// ---------- the daily audit ----------
+// Reads what each slot claims, compares it with the slot's configured Page, and says what
+// does not line up. A day can go out and still be wrong; this is what notices.
+const auditLib = require('./lib/audit');
+
+async function readClaims() {
+  const read = async (key) => {
+    try { return JSON.parse((await db.getSocial(key)) || 'null'); } catch (e) { return null; }
+  };
+  return {
+    morning: await read('daily_last_morning'),
+    evening: await read('daily_last_evening'),
+    hadith: await read('hadith_last')
+  };
+}
+
+async function dailyAudit(now) {
+  const map = await dailySchedule();
+  const claims = await readClaims();
+  return auditLib.auditSlots({ now, schedule: map, claims });
+}
+
+api.get('/admin/audit', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const out = await dailyAudit();
+    return res.json({ ok: true, ...out, summary: auditLib.describe(out.findings) || 'everything lines up' });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
 // ---------- workflows ----------
 // A workflow is a trigger plus steps; the run log is why anyone can trust it. Nothing here
 // reaches a stranger: the only outbound step is a notify, and notify waits for the owner's
@@ -3366,6 +3405,44 @@ async function postActionFromChat(verb, arg) {
   return null;
 }
 
+// How the recent posts actually did, from the Page's own engagement numbers.
+async function engagementFromChat() {
+  const social = require('./lib/social');
+  const map = await dailySchedule();
+  const rows = [];
+  for (const slot of ['morning', 'evening']) {
+    const target = map[slot];
+    if (!target || !target.page) continue;
+    try {
+      const page = await social.resolvePage(target.page);
+      const list = await social.recentPosts({
+        page: target.page, limit: 6,
+        fields: 'message,created_time,permalink_url,shares,comments.summary(true).limit(0),reactions.summary(true).limit(0)'
+      });
+      for (const p of (list.posts || [])) {
+        const reactions = (p.reactions && p.reactions.summary && p.reactions.summary.total_count) || 0;
+        const comments = (p.comments && p.comments.summary && p.comments.summary.total_count) || 0;
+        const shares = (p.shares && p.shares.count) || 0;
+        rows.push({
+          page: page.name, created: p.created_time, ref: (String(p.message || '').match(/\d{1,3}:\d{1,3}/) || [])[0] || '',
+          reactions, comments, shares, score: reactions + comments * 3 + shares * 5, url: p.permalink_url || ''
+        });
+      }
+    } catch (e) { rows.push({ page: target.page, error: String((e && e.message) || e).slice(0, 120) }); }
+  }
+  const posted = rows.filter((r) => !r.error).sort((a, b) => b.score - a.score);
+  if (!posted.length) {
+    const why = rows.find((r) => r.error);
+    return 'I could not read the engagement' + (why ? ': ' + why.error : ' just now') + '.';
+  }
+  const lines = posted.slice(0, 6).map((r) => {
+    const when = String(r.created || '').replace('T', ' ').slice(0, 16);
+    return when + ' ' + (r.ref ? 'ayah ' + r.ref + ' ' : '') + '(' + r.page + ')\n' +
+      r.reactions + ' reactions, ' + r.comments + ' comments, ' + r.shares + ' shares';
+  });
+  return 'How the last posts did, best first:\n\n' + lines.join('\n\n');
+}
+
 // The daily hadith, driven from the owner's chat the same way the ayah is: "hadith" shows
 // what would go out, "post hadith" sends it now.
 async function previewHadithFromChat() {
@@ -3464,6 +3541,8 @@ const commands = require('./lib/commands').create({
   hadithPreview: previewHadithFromChat,
   postHadith: postHadithFromChat,
   postAction: postActionFromChat,
+  engagement: engagementFromChat,
+  audit: async () => { const a = await dailyAudit(); return auditLib.describe(a.findings) || 'Everything lines up today.'; },
   workflowCommand: workflowFromChat
 });
 

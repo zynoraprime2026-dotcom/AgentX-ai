@@ -4,7 +4,9 @@ const commands = require('./lib/commands').create({
   ilm: async () => '{}',
   postDaily: async () => 'AYAH',
   postHadith: async () => 'HADITH',
-  hadithPreview: async () => 'PREVIEW'
+  hadithPreview: async () => 'PREVIEW',
+  engagement: async () => 'ENGAGEMENT',
+  audit: async () => 'AUDIT'
 });
 
 let pass = 0, fail = 0;
@@ -40,6 +42,15 @@ const stranger = { canManage: false };
   const s4 = await commands.handle('hadith patience', owner);
   ok('a hadith search is not swallowed by the daily triggers', s4 !== 'HADITH' && s4 !== 'PREVIEW', JSON.stringify(s4));
 
+
+  // the reporting commands
+  for (const [text, want] of [['engagement', 'ENGAGEMENT'], ['/engagement', 'ENGAGEMENT'], ['how did the posts do', 'ENGAGEMENT'],
+    ['audit', 'AUDIT'], ['did today go out', 'AUDIT'], ['/audit', 'AUDIT']]) {
+    ok('"' + text + '" -> ' + want, (await commands.handle(text, owner)) === want, await commands.handle(text, owner));
+  }
+  ok('a stranger gets no engagement report', (await commands.handle('engagement', stranger)) === null);
+  ok('a stranger gets no audit', (await commands.handle('audit', stranger)) === null);
+  ok('an ordinary greeting is not a report', (await commands.handle('how are you', owner)) === null);
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.log('ERROR', e); process.exit(1); });
