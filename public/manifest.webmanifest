@@ -1,13 +1,59 @@
 {
-  "name": "AgentX — AI agent dashboard",
+  "name": "AgentX \u2014 AI agent dashboard",
   "short_name": "AgentX",
   "description": "Build, run and monitor AI agents across WhatsApp, Telegram and the web.",
-  "start_url": "/",
+  "start_url": "/?source=pwa",
   "display": "standalone",
   "background_color": "#0b1220",
   "theme_color": "#0b1220",
   "icons": [
-    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
-    { "src": "og.png", "sizes": "1200x630", "type": "image/png" }
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "id": "/",
+  "scope": "/",
+  "orientation": "any",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone"
+  ],
+  "categories": [
+    "productivity",
+    "business"
+  ],
+  "lang": "en",
+  "dir": "ltr",
+  "shortcuts": [
+    {
+      "name": "Conversations",
+      "short_name": "Chats",
+      "url": "/?view=conversations"
+    },
+    {
+      "name": "Agents",
+      "short_name": "Agents",
+      "url": "/?view=agents"
+    },
+    {
+      "name": "Pages",
+      "short_name": "Pages",
+      "url": "/?view=pagesview"
+    }
   ]
 }

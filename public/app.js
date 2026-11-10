@@ -111,6 +111,56 @@ document.addEventListener('click', (e) => {
 
 
 
+
+// ---------- install as an app ----------
+// A laptop install is a Chromium "install" prompt, and on Safari or Firefox there is no
+// prompt at all, so the button explains the browser step instead of pretending to work.
+let installEvent = null;
+
+function setupInstall() {
+  const btn = $('#installApp');
+  if (!btn) return;
+  if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) return;
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    installEvent = e;
+    btn.style.display = '';
+    btn.textContent = '⬇️ Install on this laptop';
+  });
+
+  window.addEventListener('appinstalled', () => {
+    installEvent = null;
+    btn.style.display = 'none';
+    toast('AgentX is installed. Open it from your app list.');
+  });
+
+  btn.onclick = async () => {
+    if (installEvent) {
+      installEvent.prompt();
+      const choice = await installEvent.userChoice.catch(() => ({ outcome: 'dismissed' }));
+      installEvent = null;
+      if (choice && choice.outcome === 'accepted') btn.style.display = 'none';
+      else btn.textContent = '⬇️ Try installing again';
+      return;
+    }
+    const ua = navigator.userAgent;
+    let how;
+    if (/firefox/i.test(ua)) how = 'Firefox on a laptop cannot install web apps. Open AgentX in Chrome or Edge.';
+    else if (/safari/i.test(ua)) how = 'In Safari use Share, then Add to Dock.';
+    else how = 'Open the browser menu (three dots, top right), then Apps, then Install this site as an app.';
+    toast(how);
+  };
+}
+
+function setupServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data === 'agentx-update') toast('A new AgentX build is ready. Reload to use it.');
+  });
+}
+
 // ---------- pages ----------
 // The same three abilities the owner's chat has, with the same rule: a profile change is
 // shown as a diff first, and the Apply button only exists after that preview.
@@ -1330,4 +1380,12 @@ async function load() {
     const d = new Date(Date.now() + 30 * 60e3 - new Date().getTimezoneOffset() * 60e3);
     when.value = d.toISOString().slice(0, 16);
   }
+
+// Boot: the install prompt and the offline shell, plus ?view= links from the manifest shortcuts.
+try { setupServiceWorker(); setupInstall(); } catch (e) {}
+try {
+  const wanted = new URLSearchParams(location.search).get('view');
+  if (wanted && document.getElementById('view-' + wanted)) switchView(wanted);
+} catch (e) {}
+
 })();
