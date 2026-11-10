@@ -320,3 +320,31 @@ reports a failed Story without failing the post. `POST /api/admin/story {imageUr
 confirm}` drives it by hand; no confirm means no change.
 
 Tests: `node test-stories.js` (21 assertions).
+
+## The weekly review (what the numbers support)
+
+Every post already carries likes, comments and shares. The review reads them back once a week
+and biases the verse rotation toward what earned attention, instead of collecting figures and
+never using them.
+
+What it does: scores posts the same way `/api/admin/insights` does (likes + 2x comments +
+3x shares), averages per ayah, and turns the distance from the mean into a weight between 0.6
+and 1.6. `daily.nextIndex()` then looks at most `LEARN_WINDOW` (default 3) verses ahead of the
+cursor and takes the best-evidenced one. Bounded on purpose: it stays a rotation, nothing is
+skipped for long, nothing repeats in a day, and a verse with no data keeps a weight of 1.
+
+What it deliberately does not do: move the posting hours. Those live in `vercel.json`, and a
+review that reported "post at 18:00" while the crons stayed at 06:00 and 19:30 would be a lie
+with a dashboard. The summary says so in as many words.
+
+- `GET|POST /api/learn-review` reports and stores nothing (`?dry=0` applies it).
+- `?dry=0` writes `agx_social.learn_weights` (`{at, weights[], observed}`) and
+  `agx_social.learn_review`, then messages the owner a short summary.
+- A week with nothing scored keeps the previous weights rather than resetting them to 1, so a
+  quiet week cannot quietly undo the last one.
+- Stored weights that do not match the plan length are refused, never applied to the wrong
+  verses, and a failing store falls back to the plain cursor.
+- Cron: `45 5 * * 1` (Monday morning) against `/api/learn-review?dry=0`.
+
+Tests: `node test-learn.js` (34 assertions, including the arithmetic, the window bounds and the
+rotation integration).

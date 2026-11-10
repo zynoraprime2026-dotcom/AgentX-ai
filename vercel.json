@@ -24,6 +24,10 @@
     {
       "path": "/api/watchdog",
       "schedule": "40 20 * * *"
+    },
+    {
+      "path": "/api/learn-review?dry=0",
+      "schedule": "45 5 * * 1"
     }
   ],
   "rewrites": [

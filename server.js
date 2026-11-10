@@ -86,7 +86,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh', '/watchdog'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh', '/watchdog', '/learn-review'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 const keepAlive = { on: false, url: '', everyMinutes: 10 };
@@ -2817,6 +2817,93 @@ api.get('/cron/daily-post', async (req, res) => {
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
+// ---------- the weekly review ----------
+// The numbers every post already carries are read back once a week, and the rotation is biased
+// toward the verses that earned attention. Read-only by default: without dry=0 it reports what
+// it would change and stores nothing.
+const learnLib = require('./lib/learn');
+
+async function reviewPages() {
+  const social = require('./lib/social');
+  social.setToken(await getPageToken());
+  const map = await dailySchedule();
+  const names = [];
+  for (const slot of ['morning', 'evening', 'promo']) {
+    const n = map[slot] && map[slot].page;
+    if (n && !names.some((x) => x.toLowerCase() === n.toLowerCase())) names.push(n);
+  }
+  const posts = [];
+  const pages = [];
+  const problems = [];
+  for (const name of names) {
+    try {
+      const r = await social.recentPosts({
+        page: name,
+        limit: 25,
+        fields: 'id,message,created_time,permalink_url,shares,likes.summary(true),comments.summary(true)'
+      });
+      let n = 0;
+      for (const p of r.posts || []) {
+        const likes = (p.likes && p.likes.summary && p.likes.summary.total_count) || 0;
+        const comments = (p.comments && p.comments.summary && p.comments.summary.total_count) || 0;
+        const shares = (p.shares && p.shares.count) || 0;
+        const ref = learnLib.parseRef(p.message);
+        if (!ref) continue;
+        posts.push({ ref, likes, comments, shares, created: p.created_time, page: r.page && r.page.name });
+        n++;
+      }
+      pages.push((r.page && r.page.name ? r.page.name : name) + ': ' + n + ' scored');
+    } catch (e) { problems.push(name + ': ' + String((e && e.message) || e).slice(0, 90)); }
+  }
+  return { posts, pages, problems };
+}
+
+async function learnReview(opts) {
+  const o = opts || {};
+  const { posts, pages, problems } = await reviewPages();
+  const r = learnLib.review({ posts, plan: daily.PLAN, now: o.now });
+  const summary = learnLib.summarise(r, pages.concat(problems));
+  const out = {
+    dry: o.dry !== false,
+    at: r.at,
+    observed: r.observed,
+    refs: r.refs,
+    mean: r.mean,
+    best: r.best,
+    worst: r.worst,
+    raised: r.raised,
+    lowered: r.lowered,
+    pages,
+    problems,
+    summary
+  };
+  out.weights = r.weights;
+  if (o.dry === false) {
+    // Only a review with something behind it may rewrite the rotation. A quiet week must not
+    // reset weights to 1 and quietly undo the last one.
+    if (r.observed > 0) {
+      await db.putSocial('learn_weights', JSON.stringify({ at: r.at, weights: r.weights, observed: r.observed }));
+      out.applied = true;
+    } else {
+      out.applied = false;
+      out.kept = 'no scored posts, so the previous weights stand';
+    }
+    await db.putSocial('learn_review', JSON.stringify({ at: r.at, observed: r.observed, refs: r.refs, best: r.best, worst: r.worst, raised: r.raised, lowered: r.lowered }));
+    out.alert = await alertOwner('AgentX weekly review\n' + summary);
+  }
+  return out;
+}
+
+api.all('/learn-review', async (req, res) => {
+  if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
+  const q = { ...(req.query || {}), ...(req.body || {}) };
+  const dry = String(q.dry === undefined ? '1' : q.dry) !== '0' && String(q.dry) !== 'false';
+  try {
+    const out = await learnReview({ dry });
+    return res.json({ ok: true, ...out });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
 // ---------- the watchdog ----------
 // The audit existed but only spoke when asked, and a whole day went missing while every run
 // reported success. This is the asking, on a timer, plus one alert per problem per day.
