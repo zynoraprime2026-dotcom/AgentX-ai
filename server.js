@@ -3222,6 +3222,51 @@ async function postDailyFromChat(ctx) {
   const head = 'Published the ' + out.slot + ' ayah (' + out.ref + ').';
   return [head, fb, ig].filter(Boolean).join('\n');
 }
+// The same edit and delete, reachable with the admin key so they can be driven from
+// outside AgentX's own chat. Without confirm=1 nothing changes: the answer is the preview.
+api.get('/admin/last-post', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const { social, page } = await pageTarget(String(req.query.page || ''));
+    const post = await social.lastPagePost(page.id);
+    return res.json({ ok: true, page: page.name, pageId: page.id, post });
+  } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
+api.post('/admin/post-edit', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const body = req.body || {};
+  const message = String(body.message || '').trim();
+  if (!message) return res.status(400).json({ error: 'send {"message":"the new caption"}' });
+  try {
+    const { social, page } = await pageTarget(String(body.page || ''));
+    const post = body.postId
+      ? await social.recentPosts(page.id, 10).then((list) => (list.posts || []).find((p) => String(p.id) === String(body.postId)))
+      : await social.lastPagePost(page.id);
+    if (!post) return res.status(404).json({ error: 'that post is not on ' + page.name });
+    if (String(body.confirm) !== '1') {
+      return res.json({ ok: true, applied: false, page: page.name, post: { id: post.id, url: post.url }, now: post.message || '', after: message });
+    }
+    await social.editPostMessage(post.id, message);
+    return res.json({ ok: true, applied: true, page: page.name, post: { id: post.id, url: post.url } });
+  } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
+api.post('/admin/post-delete', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const body = req.body || {};
+  try {
+    const { social, page } = await pageTarget(String(body.page || ''));
+    const post = await social.lastPagePost(page.id);
+    if (!post) return res.status(404).json({ error: 'that Page has no posts' });
+    if (String(body.confirm) !== '1') {
+      return res.json({ ok: true, applied: false, page: page.name, post: { id: post.id, url: post.url }, now: post.message || '' });
+    }
+    await social.deletePost(post.id);
+    return res.json({ ok: true, applied: true, deleted: post.id, page: page.name });
+  } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
 // ---------- editing what is already on the Page ----------
 // pages_manage_posts allows a caption fix or a delete, so a wrong line no longer needs a
 // trip to Facebook. Both are destructive-ish, so nothing happens on the first request:
