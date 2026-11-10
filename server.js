@@ -982,6 +982,26 @@ const DEV_TOOLS = [
       description: 'Recent GitHub Actions runs with their conclusion, branch and sha, and a one-line verdict about whether anything is failing. This is how you answer "did the build pass?" for a GitHub-hosted build.',
       parameters: { type: 'object', properties: { repo: { type: 'string' }, limit: { type: 'number' } } } } },
   { type: 'function', function: {
+      name: 'github_stage_issue',
+      description: 'Prepare a GitHub issue. This creates NOTHING yet: it records the title and body and waits for the owner to answer yes in chat. Never say an issue was opened until they have said yes.',
+      parameters: { type: 'object', properties: {
+        repo: { type: 'string', description: 'owner/name; the AgentX repo when omitted' },
+        title: { type: 'string' },
+        body: { type: 'string' },
+        labels: { type: 'array', items: { type: 'string' }, description: 'Optional labels that already exist on the repo' }
+      }, required: ['title'] } } },
+  { type: 'function', function: {
+      name: 'github_stage_pr',
+      description: 'Prepare a pull request from a branch that already exists. This opens NOTHING yet: it waits for the owner to answer yes in chat. Commit the change to a branch with github_write_file first, then stage the pull request.',
+      parameters: { type: 'object', properties: {
+        repo: { type: 'string' },
+        title: { type: 'string' },
+        head: { type: 'string', description: 'The branch holding the change' },
+        base: { type: 'string', description: 'Branch to merge into, main by default' },
+        body: { type: 'string' },
+        draft: { type: 'boolean' }
+      }, required: ['title', 'head'] } } },
+  { type: 'function', function: {
       name: 'render_deploy_status',
       description: 'Whether the live Render service is running the latest commit, with the last three deploys.',
       parameters: { type: 'object', properties: {} } } },
@@ -1238,6 +1258,43 @@ async function runTool(name, args, ctx) {
           message: args.message, branch: args.branch
         });
         return d.action + ' ' + d.path + ' on ' + d.repo + ' (commit ' + d.commit + '). ' + d.url;
+      }
+      case 'github_stage_issue': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try {
+          const repo = String(args.repo || devtools.REPO);
+          const title = String(args.title || '').trim();
+          if (!title) return 'An issue needs a title.';
+          await setPendingAction({
+            kind: 'github_issue', repo, title,
+            body: String(args.body || ''),
+            labels: Array.isArray(args.labels) ? args.labels.slice(0, 5) : [],
+            at: new Date().toISOString()
+          });
+          return 'I will open this issue on ' + repo + ':\n\n*' + title + '*\n' +
+            (args.body ? String(args.body).slice(0, 500) + '\n\n' : '') +
+            'Reply yes to open it, or no to drop it.';
+        } catch (e) { return 'Could not stage that: ' + String(e.message || e).slice(0, 200); }
+      }
+      case 'github_stage_pr': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try {
+          const repo = String(args.repo || devtools.REPO);
+          const title = String(args.title || '').trim();
+          const head = String(args.head || '').trim();
+          if (!title) return 'A pull request needs a title.';
+          if (!head) return 'Name the branch holding the change; commit it with github_write_file first.';
+          await setPendingAction({
+            kind: 'github_pr', repo, title, head,
+            base: String(args.base || 'main'),
+            body: String(args.body || ''),
+            draft: Boolean(args.draft),
+            at: new Date().toISOString()
+          });
+          return 'I will open a pull request on ' + repo + ':\n\n*' + title + '*\n' +
+            head + ' → ' + String(args.base || 'main') + '\n\n' +
+            'Reply yes to open it, or no to drop it.';
+        } catch (e) { return 'Could not stage that: ' + String(e.message || e).slice(0, 200); }
       }
       case 'github_overview': case 'github_branches': case 'github_prs': case 'github_pr':
       case 'github_issues': case 'github_actions':
@@ -3990,6 +4047,16 @@ async function postActionFromChat(verb, arg) {
         await social.editPostMessage(pending.postId, pending.newMessage, pending.token);
         await clearPendingAction();
         return 'Caption updated on ' + pending.page + '.' + (pending.url ? '\n' + pending.url : '');
+      }
+      if (pending.kind === 'github_issue' || pending.kind === 'github_pr') {
+        // Only now does anything reach GitHub, and only because the owner said yes.
+        const devtools = require('./lib/devtools');
+        const done = pending.kind === 'github_issue'
+          ? await devtools.openIssue({ repo: pending.repo, title: pending.title, body: pending.body, labels: pending.labels })
+          : await devtools.openPull({ repo: pending.repo, title: pending.title, head: pending.head, base: pending.base, body: pending.body, draft: pending.draft });
+        await clearPendingAction();
+        return (pending.kind === 'github_issue' ? 'Issue #' : 'Pull request #') + done.number +
+          ' is open on ' + done.repo + '.\n' + done.url;
       }
       if (pending.kind === 'comment_reply' || pending.kind === 'comment_delete') {
         const done = await applyCommentAction(pending);
