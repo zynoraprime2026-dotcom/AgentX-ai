@@ -2298,6 +2298,67 @@ app.all('/api/admin/instagram', async (req, res) => {
   }
 });
 
+// Which Instagram accounts are actually wired to the never-expiring system user, and how long
+// the token that currently publishes them has left. The two answers decide whether Instagram
+// survives a missed refresh, so they are asked in one place instead of guessed.
+app.get('/api/admin/ig-status', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const G = 'https://graph.facebook.com/v21.0';
+  const debug = async (token) => {
+    if (!token) return null;
+    try {
+      const r = await fetch(G + '/debug_token?input_token=' + encodeURIComponent(token) + '&access_token=' + encodeURIComponent(token), { signal: AbortSignal.timeout(12000) });
+      const j = await r.json();
+      const d = (j && j.data) || null;
+      if (!d) return { error: (j && j.error && j.error.message) || 'no data' };
+      return {
+        type: d.type || null,
+        appId: d.app_id || null,
+        valid: Boolean(d.is_valid),
+        expiresAt: d.expires_at ? new Date(d.expires_at * 1000).toISOString() : null,
+        daysLeft: d.expires_at ? Math.round((d.expires_at * 1000 - Date.now()) / 86400000) : null,
+        scopes: d.scopes || []
+      };
+    } catch (e) { return { error: String((e && e.message) || e).slice(0, 140) }; }
+  };
+  try {
+    const systemToken = await getPageToken();
+    const out = { systemToken: await debug(systemToken), pages: [], unassigned: [] };
+    const pages = [];
+    try {
+      const social = require('./lib/social');
+      social.setToken(systemToken);
+      for (const p of (await social.listPages()) || []) pages.push({ id: p.id, name: p.name, token: p.token });
+    } catch (e) { out.listError = String((e && e.message) || e).slice(0, 180); }
+
+    for (const p of pages) {
+      const row = { id: p.id, name: p.name, ig: null, igError: null };
+      try {
+        const r = await fetch(G + '/' + encodeURIComponent(p.id) + '?fields=id,name,instagram_business_account{id,username,followers_count}&access_token=' + encodeURIComponent(p.token || systemToken), { signal: AbortSignal.timeout(12000) });
+        const j = await r.json();
+        if (j && j.error) row.igError = j.error.message;
+        else if (j && j.instagram_business_account) row.ig = j.instagram_business_account;
+      } catch (e) { row.igError = String((e && e.message) || e).slice(0, 140); }
+      if (p.name === 'The salafi Da\u2019wah' && !row.ig) out.unassigned.push('the_salafi_dawah');
+      out.pages.push(row);
+    }
+
+    const igToken = await db.getSocial('meta_ig_token').catch(() => '');
+    out.igToken = await debug(igToken);
+    if (igToken) {
+      try {
+        const r = await fetch('https://graph.instagram.com/v21.0/me?fields=id,username&access_token=' + encodeURIComponent(igToken), { signal: AbortSignal.timeout(12000) });
+        const j = await r.json();
+        out.igToken.identity = j && j.error ? { error: j.error.message } : { id: j.id, username: j.username };
+      } catch (e) { out.igToken.identity = { error: String((e && e.message) || e).slice(0, 140) }; }
+    }
+    out.verdict = out.igToken && out.igToken.daysLeft !== null
+      ? 'Instagram publishes on a token with ' + out.igToken.daysLeft + ' days left; assigning the account to the system user removes that clock'
+      : 'Instagram token expiry could not be read';
+    return res.json({ ok: true, ...out });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
 app.get('/api/admin/social', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
