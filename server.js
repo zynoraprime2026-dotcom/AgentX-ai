@@ -2892,7 +2892,7 @@ api.get('/cron/daily-post', async (req, res) => {
 // Which model lanes actually work, asked with the deployed keys. A configured key is not a
 // working key: this is the difference between "the agent is being difficult" and "the Groq key
 // was rotated and the Gemini budget is gone".
-api.get('/api/admin/providers', async (req, res) => {
+app.get('/api/admin/providers', async (req, res) => {
   if (!(await cronOk(req)) && !isFounderOrKey(req)) return res.status(401).json({ error: 'unauthorized' });
   const probe = async (url, headers) => {
     const started = Date.now();
