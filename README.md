@@ -261,3 +261,22 @@ own numbers (reactions, comments, shares from the posts endpoint) and list the r
 best first, scoring a comment above a reaction and a share above both. Owner-only.
 
 Tests: `node test-audit.js` (15 assertions); command routing in `test-commands-hadith.js`.
+
+## Comments
+
+`pages_manage_engagement` opened the conversation under the posts, so AgentX can read and
+answer it. Everything uses the Page's own token: the system-user token answers "Invalid
+OAuth 2.0 Access Token" on a Page's edges, which looks like a dead token and means a missing
+page token.
+
+- "comments" / "replies" / "inbox" / `/comments` numbers the newest comments across the last
+  three posts of each page the schedule names, newest first, and stores the list so a later
+  answer can point at a number.
+- "reply 2 <words>" / "reply to comment 3 <words>" / `/reply 2 <words>` stages the reply and
+  shows the comment beside it. "hide 1" / "delete comment 1" / `/hidecomment 1` stages a
+  removal. A yes applies either one and fetches a fresh Page token first.
+- `GET /api/admin/comments`, `POST /api/admin/comment-reply {commentId,message,page,confirm}`,
+  `POST /api/admin/comment-delete {commentId,page,confirm}` for driving it from outside chat;
+  no confirm means no change.
+
+Tests: `node test-comments.js` (24 assertions).

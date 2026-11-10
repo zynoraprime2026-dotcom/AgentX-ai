@@ -6,6 +6,8 @@ const commands = require('./lib/commands').create({
   postHadith: async () => 'HADITH',
   hadithPreview: async () => 'PREVIEW',
   engagement: async () => 'ENGAGEMENT',
+  comments: async () => 'COMMENTS',
+  commentAction: async () => 'STAGED',
   audit: async () => 'AUDIT'
 });
 

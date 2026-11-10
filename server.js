@@ -2782,6 +2782,143 @@ api.get('/cron/daily-post', async (req, res) => {
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
+// ---------- comments ----------
+// Reading the conversation under the posts, and answering it. Pages rarely get comments, so
+// the list is short and numbered; a reply or a delete names the number, not a long id.
+const COMMENT_LIST_KEY = 'last_comment_list';
+
+async function commentPages() {
+  const social = require('./lib/social');
+  social.setToken(await getPageToken());
+  const map = await dailySchedule();
+  const names = [];
+  for (const slot of ['morning', 'evening']) {
+    const n = map[slot] && map[slot].page;
+    if (n && !names.some((x) => x.toLowerCase() === n.toLowerCase())) names.push(n);
+  }
+  return { social, names, map };
+}
+
+// Every comment on the newest posts of the pages the schedule names, newest first, and
+// numbered so a later "reply 2 ..." has something stable to point at.
+async function collectComments(limitPerPost) {
+  const { social, names } = await commentPages();
+  const rows = [];
+  const problems = [];
+  for (const name of names) {
+    let page;
+    try { page = await social.resolvePage(name); } catch (e) { problems.push(name + ': ' + String(e.message).slice(0, 80)); continue; }
+    let posts = [];
+    try { posts = (await social.recentPosts({ page: name, limit: 3, fields: 'id,message,created_time' })).posts || []; }
+    catch (e) { problems.push(name + ': ' + String(e.message).slice(0, 80)); continue; }
+    for (const post of posts.slice(0, 3)) {
+      try {
+        const list = await social.listComments(post.id, page.token, limitPerPost || 10);
+        for (const c of list) {
+          rows.push({ ...c, page: page.name, postId: post.id, ref: (String(post.message || '').match(/\d{1,3}:\d{1,3}/) || [])[0] || '' });
+        }
+      } catch (e) { problems.push(page.name + ' ' + post.id + ': ' + String(e.message).slice(0, 80)); }
+    }
+  }
+  rows.sort((a, b) => String(b.created).localeCompare(String(a.created)));
+  const numbered = rows.slice(0, 20).map((c, i) => ({ n: i + 1, ...c }));
+  await db.putSocial(COMMENT_LIST_KEY, JSON.stringify({ at: new Date().toISOString(), items: numbered }));
+  return { items: numbered, problems };
+}
+
+function sayComments(out) {
+  if (!out.items.length) {
+    return 'No comments waiting on the pages the schedule names.' + (out.problems.length ? '\n(Could not read: ' + out.problems.slice(0, 2).join('; ') + ')' : '');
+  }
+  const lines = out.items.map((c) => c.n + '. ' + c.author + ' on ' + c.page + (c.ref ? ' (' + c.ref + ')' : '') + ':\n' + String(c.message).slice(0, 220));
+  return lines.join('\n\n') + '\n\nSay "reply 1 <your words>" to answer one, or "hide 1" to remove it.';
+}
+
+async function commentsFromChat() {
+  const out = await collectComments(10);
+  return sayComments(out);
+}
+
+// A reply or a hide, staged like the caption edits so nothing reaches a stranger's comment
+// without the owner's yes.
+async function commentActionFromChat(verb, arg) {
+  const pendingRead = async () => {
+    try { return JSON.parse((await db.getSocial(COMMENT_LIST_KEY)) || 'null'); } catch (e) { return null; }
+  };
+  const found = await pendingRead();
+  const n = parseInt((arg && arg.n), 10);
+  const item = found && (found.items || []).find((c) => c.n === n);
+  if (!item) return 'I do not have comment ' + (n || '?') + ' in the last list. Say "comments" first, then reply to a number from that list.';
+
+  if (verb === 'reply') {
+    const message = String((arg && arg.message) || '').trim();
+    if (!message) return 'Say it as: reply ' + n + ' <your words>';
+    await setPendingAction({
+      kind: 'comment_reply', commentId: item.id, page: item.page, token: '',
+      author: item.author, oldMessage: item.message, newMessage: message, at: new Date().toISOString()
+    });
+    return 'I will reply on ' + item.page + ' to ' + item.author + ':\n\n' +
+      'Theirs: ' + String(item.message).slice(0, 200) + '\n\nYours: ' + message + '\n\nReply yes to post it, no to drop it.';
+  }
+
+  if (verb === 'hide') {
+    await setPendingAction({
+      kind: 'comment_delete', commentId: item.id, page: item.page, token: '',
+      author: item.author, oldMessage: item.message, at: new Date().toISOString()
+    });
+    return 'This deletes ' + item.author + '\'s comment on ' + item.page + ':\n\n' +
+      String(item.message).slice(0, 220) + '\n\nReply yes to delete, no to leave it.';
+  }
+  return null;
+}
+
+// Applying a comment action uses the Page's own token, fetched fresh so a stale stored
+// token can never be the reason a reply fails.
+async function applyCommentAction(pending) {
+  const social = require('./lib/social');
+  const page = await social.resolvePage(pending.page);
+  if (pending.kind === 'comment_reply') {
+    const out = await social.replyToComment(pending.commentId, pending.newMessage, page.token);
+    return { ok: true, id: out.id, page: page.name };
+  }
+  const out = await social.deleteComment(pending.commentId, page.token);
+  return { ok: true, id: out.id, page: page.name };
+}
+
+api.get('/admin/comments', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const out = await collectComments(parseInt(req.query.limit, 10) || 10);
+    return res.json({ ok: true, count: out.items.length, comments: out.items, problems: out.problems, summary: sayComments(out) });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
+api.post('/admin/comment-reply', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const body = req.body || {};
+  const confirm = String(body.confirm || (req.query && req.query.confirm) || '') === '1';
+  try {
+    const social = require('./lib/social');
+    if (!confirm) return res.json({ ok: true, applied: false, would: { commentId: body.commentId || '', message: String(body.message || '').slice(0, 300) } });
+    const page = await social.resolvePage(String(body.page || ''));
+    const out = await social.replyToComment(String(body.commentId || ''), String(body.message || ''), page.token);
+    return res.json({ ok: true, applied: true, page: page.name, id: out.id });
+  } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
+api.post('/admin/comment-delete', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const body = req.body || {};
+  const confirm = String(body.confirm || (req.query && req.query.confirm) || '') === '1';
+  try {
+    const social = require('./lib/social');
+    if (!confirm) return res.json({ ok: true, applied: false, would: { commentId: body.commentId || '' } });
+    const page = await social.resolvePage(String(body.page || ''));
+    const out = await social.deleteComment(String(body.commentId || ''), page.token);
+    return res.json({ ok: true, applied: true, page: page.name, id: out.id });
+  } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
 // ---------- the daily audit ----------
 // Reads what each slot claims, compares it with the slot's configured Page, and says what
 // does not line up. A day can go out and still be wrong; this is what notices.
@@ -3393,6 +3530,13 @@ async function postActionFromChat(verb, arg) {
         await clearPendingAction();
         return 'Caption updated on ' + pending.page + '.' + (pending.url ? '\n' + pending.url : '');
       }
+      if (pending.kind === 'comment_reply' || pending.kind === 'comment_delete') {
+        const done = await applyCommentAction(pending);
+        await clearPendingAction();
+        return pending.kind === 'comment_reply'
+          ? 'Replied to ' + pending.author + ' on ' + done.page + '.'
+          : 'Deleted that comment on ' + done.page + '.';
+      }
       await social.deletePost(pending.postId, pending.token);
       await clearPendingAction();
       return 'Deleted the post from ' + pending.page + '.';
@@ -3541,6 +3685,8 @@ const commands = require('./lib/commands').create({
   hadithPreview: previewHadithFromChat,
   postHadith: postHadithFromChat,
   postAction: postActionFromChat,
+  comments: commentsFromChat,
+  commentAction: commentActionFromChat,
   engagement: engagementFromChat,
   audit: async () => { const a = await dailyAudit(); return auditLib.describe(a.findings) || 'Everything lines up today.'; },
   workflowCommand: workflowFromChat
