@@ -3332,7 +3332,10 @@ api.all('/admin/daily-post', async (req, res) => {
     if (deps.instagram) deps.instagram.setToken(pgTok);
     try { if (deps.instagram) deps.instagram.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
     const opts = { ...deps, dry, force: String(q.force) === '1' };
-    if (q.slot === 'morning' || q.slot === 'evening') opts.slot = q.slot;
+    // 'promo' belongs here: without it the third slot fell through to the clock, was labelled
+    // evening, and would have claimed the evening slot while posting to the promo Page.
+    if (q.slot === 'morning' || q.slot === 'evening' || q.slot === 'promo') opts.slot = q.slot;
+    if (q.slot === 'promo') opts.captionSuffix = ((await dailySchedule()).promo || {}).line || PROMO_LINE;
     if (q.index !== undefined && q.index !== '') opts.index = parseInt(q.index, 10) || 0;
     if (q.date) opts.date = q.date;
     if (String(q.guard) === '0') opts.guard = false;
