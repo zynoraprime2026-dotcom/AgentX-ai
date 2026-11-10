@@ -958,6 +958,30 @@ const DEV_TOOLS = [
         branch: { type: 'string', description: 'Optional branch; the default branch when omitted' }
       }, required: ['repo', 'path', 'content'] } } },
   { type: 'function', function: {
+      name: 'github_overview',
+      description: 'One repo at a glance: default branch, last push, open issues and PRs, language, description. repo is owner/name; the AgentX repo when omitted.',
+      parameters: { type: 'object', properties: { repo: { type: 'string' } } } } },
+  { type: 'function', function: {
+      name: 'github_branches',
+      description: 'Branches on a repo with the commit each points at. Use it before proposing a branch name, so a change lands on a branch that exists or is clearly new.',
+      parameters: { type: 'object', properties: { repo: { type: 'string' }, limit: { type: 'number' } } } } },
+  { type: 'function', function: {
+      name: 'github_prs',
+      description: 'Pull requests on a repo, open by default, with number, title, branch route and author.',
+      parameters: { type: 'object', properties: { repo: { type: 'string' }, state: { type: 'string', enum: ['open', 'closed', 'all'] }, limit: { type: 'number' } } } } },
+  { type: 'function', function: {
+      name: 'github_pr',
+      description: 'One pull request in full: mergeability, commit and file counts, changed files, and the result of each CI check. Use it to answer "is it green?" instead of assuming.',
+      parameters: { type: 'object', properties: { repo: { type: 'string' }, number: { type: 'number' } }, required: ['number'] } } },
+  { type: 'function', function: {
+      name: 'github_issues',
+      description: 'Issues on a repo (pull requests are filtered out of the list). Pass query to search instead of listing, e.g. "sunnah narration".',
+      parameters: { type: 'object', properties: { repo: { type: 'string' }, state: { type: 'string', enum: ['open', 'closed', 'all'] }, query: { type: 'string' }, limit: { type: 'number' } } } } },
+  { type: 'function', function: {
+      name: 'github_actions',
+      description: 'Recent GitHub Actions runs with their conclusion, branch and sha, and a one-line verdict about whether anything is failing. This is how you answer "did the build pass?" for a GitHub-hosted build.',
+      parameters: { type: 'object', properties: { repo: { type: 'string' }, limit: { type: 'number' } } } } },
+  { type: 'function', function: {
       name: 'render_deploy_status',
       description: 'Whether the live Render service is running the latest commit, with the last three deploys.',
       parameters: { type: 'object', properties: {} } } },
@@ -1123,6 +1147,50 @@ async function runTool(name, args, ctx) {
         await docs.put('triggers', { ...t, active: action === 'resume' });
         return '"' + t.name + '" is now ' + (action === 'resume' ? 'active' : 'paused') + '.';
       }
+      case 'page_recent_posts': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try {
+          const social = require('./lib/social');
+          social.setToken(await getPageToken());
+          social.setPageTokens(await getPageTokens(['1226430293877510','108861494336428','100103581942138']));
+          const map = await dailySchedule();
+          const wanted = args.page || (map[slotForNow()] || map.morning || {}).page;
+          if (!wanted) return 'No Page is configured. Ask which one.';
+          const n = Math.min(Math.max(Number(args.limit) || 5, 1), 10);
+          const list = await social.recentPosts({
+            page: wanted, limit: n,
+            fields: 'message,created_time,permalink_url,shares,comments.summary(true).limit(0),reactions.summary(true).limit(0)'
+          });
+          const posts = list.posts || [];
+          if (!posts.length) return 'No posts came back for ' + wanted + '.';
+          return 'Newest posts on ' + wanted + ':\n\n' + posts.map((p, i) => {
+            const r = (p.reactions && p.reactions.summary && p.reactions.summary.total_count) || 0;
+            const c = (p.comments && p.comments.summary && p.comments.summary.total_count) || 0;
+            const sh = (p.shares && p.shares.count) || 0;
+            return (i + 1) + '. ' + String(p.created_time || '').replace('T', ' ').slice(0, 16) + '  likes ' + r + ', comments ' + c + ', shares ' + sh + '\n' + shorten(p.message, 200) + (p.permalink_url ? '\n' + p.permalink_url : '');
+          }).join('\n\n');
+        } catch (e) { return 'Could not read the Page: ' + String(e.message || e).slice(0, 200); }
+      }
+      case 'page_comments': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try { return await commentsFromChat(); }
+        catch (e) { return 'Could not read comments: ' + String(e.message || e).slice(0, 200); }
+      }
+      case 'page_engagement': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try { return await engagementFromChat(); }
+        catch (e) { return 'Could not read engagement: ' + String(e.message || e).slice(0, 200); }
+      }
+      case 'page_stage_edit': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try { return await postActionFromChat('edit', { page: args.page, message: args.message }); }
+        catch (e) { return 'Could not stage that: ' + String(e.message || e).slice(0, 200); }
+      }
+      case 'page_stage_delete': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try { return await postActionFromChat('delete', { page: args.page }); }
+        catch (e) { return 'Could not stage that: ' + String(e.message || e).slice(0, 200); }
+      }
       case 'page_status': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
         const social = require('./lib/social');
@@ -1171,6 +1239,8 @@ async function runTool(name, args, ctx) {
         });
         return d.action + ' ' + d.path + ' on ' + d.repo + ' (commit ' + d.commit + '). ' + d.url;
       }
+      case 'github_overview': case 'github_branches': case 'github_prs': case 'github_pr':
+      case 'github_issues': case 'github_actions':
       case 'github_list': case 'github_file': case 'github_search_code':
       case 'github_commits': case 'render_deploy_status': case 'render_logs': {
         // Repository and production-log access is owner-only and dashboard-only: a
@@ -1181,6 +1251,12 @@ async function runTool(name, args, ctx) {
           if (name === 'github_file') return await devtools.readFile(args.path, args.ref);
           if (name === 'github_search_code') return await devtools.searchCode(args.query);
           if (name === 'github_commits') return await devtools.commits(args.limit);
+          if (name === 'github_overview') return await devtools.overview(args.repo);
+          if (name === 'github_branches') return await devtools.branches(args.repo, args.limit);
+          if (name === 'github_prs') return await devtools.pullRequests(args.repo, args.state, args.limit);
+          if (name === 'github_pr') return await devtools.pullRequest(args.repo, args.number);
+          if (name === 'github_issues') return await devtools.issues(args.repo, { state: args.state, query: args.query, limit: args.limit });
+          if (name === 'github_actions') return await devtools.actions(args.repo, args.limit);
           if (name === 'render_deploy_status') return await devtools.deployStatus();
           return await devtools.logs(args.limit, args.text);
         } catch (e) {
@@ -1475,7 +1551,33 @@ const SOCIAL_TOOLS = [
         message: { type: 'string', description: 'The exact text of the post' },
         imageUrl: { type: 'string', description: 'Optional public image URL for a photo post' },
         link: { type: 'string', description: 'Optional link for a text post' }
-      }, required: ['message'] } } }
+      }, required: ['message'] } } },
+  { type: 'function', function: {
+      name: 'page_recent_posts',
+      description: 'Read the newest posts on a connected Facebook Page: text, date, link, and likes, comments and shares. Use it when the owner asks what is on the Page, what was posted, or how a post is doing. Read-only.',
+      parameters: { type: 'object', properties: {
+        page: { type: 'string', description: 'Page name as the owner says it. The scheduled Page when omitted.' },
+        limit: { type: 'number', description: 'How many posts, 1 to 10' }
+      } } } },
+  { type: 'function', function: {
+      name: 'page_comments',
+      description: 'Numbered comments waiting on the newest posts of the scheduled Pages. Read-only; the owner answers one by saying "reply 2 <words>" or removes one with "hide 2" in chat.',
+      parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: {
+      name: 'page_engagement',
+      description: 'How the recent posts actually performed on the scheduled Pages, from the Pages own like, comment and share counts. Use it before suggesting changes to content or timing.',
+      parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: {
+      name: 'page_stage_edit',
+      description: 'Prepare a new caption for the newest post on a Page. This changes NOTHING yet: it shows the old and new text and waits. The owner applies it by replying yes in chat, or drops it with no. Never say it was changed until they have said yes.',
+      parameters: { type: 'object', properties: {
+        page: { type: 'string' },
+        message: { type: 'string', description: 'The full new caption' }
+      }, required: ['message'] } } },
+  { type: 'function', function: {
+      name: 'page_stage_delete',
+      description: 'Prepare removal of the newest post on a Page. This deletes NOTHING yet: it shows the post and waits. Likes and comments go with it, so say so. The owner confirms by replying yes in chat.',
+      parameters: { type: 'object', properties: { page: { type: 'string' } } } } }
 ];
 
 const TOOLSETS = { ilm: TOOLS, shop: SHOP_TOOLS, profile: PROFILE_TOOLS, studio: STUDIO_TOOLS, turath: TURATH_TOOLS, web: WEB_TOOLS, dev: DEV_TOOLS, email: EMAIL_TOOLS, manage: MANAGE_TOOLS, social: SOCIAL_TOOLS };
