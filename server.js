@@ -2352,9 +2352,12 @@ app.get('/api/admin/ig-status', async (req, res) => {
         out.igToken.identity = j && j.error ? { error: j.error.message } : { id: j.id, username: j.username };
       } catch (e) { out.igToken.identity = { error: String((e && e.message) || e).slice(0, 140) }; }
     }
-    out.verdict = out.igToken && out.igToken.daysLeft !== null
-      ? 'Instagram publishes on a token with ' + out.igToken.daysLeft + ' days left; assigning the account to the system user removes that clock'
-      : 'Instagram token expiry could not be read';
+    // A permanent token has no expiry to report, which used to read as a failure. Say which of
+    // the two it is: a token with a clock, or one without.
+    if (!out.igToken) out.verdict = 'No Instagram token is stored at all';
+    else if (!out.igToken.valid) out.verdict = 'The stored Instagram token is not valid: ' + (out.igToken.identity && out.igToken.identity.error ? out.igToken.identity.error : 'unknown reason');
+    else if (out.igToken.expiresAt && out.igToken.daysLeft !== null) out.verdict = 'Instagram publishes on a token with ' + out.igToken.daysLeft + ' days left; assigning the account to the system user would remove that clock';
+    else out.verdict = 'Instagram publishes on a ' + (out.igToken.type || 'permanent') + ' token that never expires';
     return res.json({ ok: true, ...out });
   } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
 });
