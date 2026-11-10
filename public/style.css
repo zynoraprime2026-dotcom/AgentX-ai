@@ -264,3 +264,9 @@ input[type=range] { padding: 0; accent-color: var(--accent); }
 .rate .rate-btn { opacity: .45; font-size: 13px; }
 .rate .rate-btn:hover { opacity: 1; }
 .rate .rate-btn.picked { opacity: 1; }
+
+/* Two columns for the Pages view: profile fields and daily targets. */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.grid2 label { font-size: 12px; }
+.grid2 .input { margin-top: 4px; }
+@media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }

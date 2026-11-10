@@ -89,6 +89,7 @@ const views = {
   conversations: renderConversations,
   reminders: loadReminders, triggers: loadTriggers, channels: () => renderHealth(),
   connectors: renderConnectors,
+  pagesview: renderPages,
   billing: loadBilling, settings: loadHealth
 };
 
@@ -108,6 +109,138 @@ document.addEventListener('click', (e) => {
   if (go) switchView(go.dataset.goto);
 });
 
+
+
+// ---------- pages ----------
+// The same three abilities the owner's chat has, with the same rule: a profile change is
+// shown as a diff first, and the Apply button only exists after that preview.
+let pageProfileCache = null;
+
+async function renderPages() {
+  const pick = $('#pgPick');
+  try {
+    const d = await api('/admin/page-settings');
+    const names = d.pages && d.pages.length ? d.pages : [d.page];
+    if (!pick.options.length) {
+      pick.innerHTML = names.map((n) => '<option' + (n === d.page ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+    }
+    pageProfileCache = d;
+    drawProfile(d);
+  } catch (e) { $('#pgProfile').textContent = 'Could not read the Page: ' + e.message; }
+  loadSchedule();
+  loadHits();
+  pick.onchange = () => loadProfiles(pick.value);
+  $('#pgReload').onclick = () => { loadProfiles(pick.value); loadSchedule(); loadHits(); };
+  $('#pgPreview').onclick = () => previewProfile(pick.value);
+  $('#pgSchedSave').onclick = () => saveSchedule();
+}
+
+async function loadProfiles(name) {
+  try {
+    const d = await api('/admin/page-settings?page=' + encodeURIComponent(name || ''));
+    pageProfileCache = d;
+    drawProfile(d);
+  } catch (e) { toast('Could not read that Page: ' + e.message); }
+}
+
+function drawProfile(d) {
+  const p = d.profile || {};
+  $('#pgProfile').innerHTML = '<b>' + esc(p.name || d.page) + '</b> · ' + esc(p.category || 'no category')
+    + ' · ' + (p.followers_count == null ? 'followers not reported' : p.followers_count + ' followers')
+    + (p.link ? ' · <a href="' + esc(p.link) + '" target="_blank" rel="noopener">open</a>' : '');
+  const fields = d.fields || Object.keys(d.editable || {});
+  $('#pgFields').innerHTML = fields.map((f) => {
+    const v = (d.editable && d.editable[f]) || '';
+    const long = ['about', 'description', 'hours', 'personal_info'].includes(f);
+    const input = long
+      ? '<textarea class="input" data-field="' + f + '" rows="3">' + esc(v) + '</textarea>'
+      : '<input class="input" data-field="' + f + '" value="' + esc(v) + '">';
+    return '<label class="muted" style="display:block">' + f + input + '</label>';
+  }).join('');
+  $('#pgDiff').innerHTML = '';
+  $('#pgApply').disabled = true;
+  $('#pgNote').textContent = 'Edit a field, then preview.';
+}
+
+function profileChanges() {
+  const out = {};
+  $$('#pgFields [data-field]').forEach((el) => {
+    const field = el.dataset.field;
+    const before = (pageProfileCache && pageProfileCache.editable && pageProfileCache.editable[field]) || '';
+    const now = el.value.trim();
+    if (now && now !== before) out[field] = now;
+  });
+  return out;
+}
+
+async function previewProfile(name) {
+  const changes = profileChanges();
+  if (!Object.keys(changes).length) { $('#pgNote').textContent = 'Nothing changed yet.'; return; }
+  try {
+    const d = await api('/admin/page-settings', { method: 'POST', body: { page: name, changes } });
+    if (d.unchanged) { $('#pgNote').textContent = d.message; return; }
+    $('#pgDiff').innerHTML = '<div class="table-wrap"><table><thead><tr><th>Field</th><th>Now</th><th>After</th></tr></thead><tbody>'
+      + d.diff.map((r) => '<tr><td>' + esc(r.field) + '</td><td>' + esc(r.from).slice(0, 160) + '</td><td>' + esc(r.to).slice(0, 160) + '</td></tr>').join('')
+      + '</tbody></table></div>';
+    $('#pgNote').textContent = 'Preview only. Nothing has been sent to Facebook.';
+    $('#pgApply').disabled = false;
+    $('#pgApply').onclick = () => applyProfile(name, changes);
+  } catch (e) { $('#pgNote').textContent = 'Could not preview: ' + e.message; }
+}
+
+async function applyProfile(name, changes) {
+  $('#pgApply').disabled = true;
+  try {
+    const d = await api('/admin/page-settings?confirm=1', { method: 'POST', body: { page: name, changes } });
+    toast(d.applied ? 'Saved ' + (d.changed || []).join(', ') + ' on ' + name : 'Nothing was saved');
+    $('#pgNote').textContent = d.applied ? 'Applied.' : (d.message || 'Nothing saved.');
+    loadProfiles(name);
+  } catch (e) { $('#pgNote').textContent = 'Facebook refused it: ' + e.message; $('#pgApply').disabled = false; }
+}
+
+async function loadSchedule() {
+  try {
+    const d = await api('/admin/daily-schedule');
+    const map = d.schedule || {};
+    $('#pgSchedule').innerHTML = ['morning', 'evening'].map((slot) => {
+      const e = map[slot] || {};
+      return '<div><label class="muted" style="display:block">' + slot + ' · 06:00 / 19:30 UTC'
+        + '<input class="input" data-slot="' + slot + '" data-kind="page" value="' + esc(e.page || '') + '">'
+        + '<input class="input" data-slot="' + slot + '" data-kind="ig" placeholder="Instagram handle, empty for Facebook only" value="' + esc(e.igAccount || '') + '">'
+        + '</label></div>';
+    }).join('') + '<div class="muted">third run: ' + esc(((map.promo || {}).page) || 'Zynora Prime') + ' (rides the evening run)</div>';
+    $('#pgSchedNote').textContent = 'Saving points the next run at those accounts.';
+  } catch (e) { $('#pgSchedule').textContent = 'Could not read the schedule: ' + e.message; }
+}
+
+async function saveSchedule() {
+  const body = {};
+  $$('#pgSchedule [data-slot]').forEach((el) => {
+    const slot = el.dataset.slot;
+    body[slot] = body[slot] || {};
+    if (el.dataset.kind === 'page') body[slot].page = el.value.trim();
+    if (el.dataset.kind === 'ig') body[slot].ig = el.value.trim().replace(/^@/, '');
+  });
+  try {
+    const d = await api('/admin/daily-schedule', { method: 'POST', body });
+    const map = d.schedule || {};
+    toast('Saved: morning ' + map.morning.page + ', evening ' + map.evening.page);
+    loadSchedule();
+  } catch (e) { const m = 'Could not save: ' + e.message; toast(m); $('#pgSchedNote').textContent = m; }
+}
+
+async function loadHits() {
+  try {
+    const d = await api('/admin/cron-hits');
+    if (!d.count) {
+      $('#pgHits').innerHTML = '<p class="muted">No run has stamped yet. That means either nothing fired or the record was reset today.</p>';
+      return;
+    }
+    $('#pgHits').innerHTML = '<table><thead><tr><th>When</th><th>Run</th></tr></thead><tbody>'
+      + d.hits.map((h) => '<tr><td>' + esc(String(h.at).replace('T', ' ').slice(0, 19)) + '</td><td>' + esc(h.entry) + '</td></tr>').join('')
+      + '</tbody></table>';
+  } catch (e) { $('#pgHits').textContent = 'Could not read the heartbeat: ' + e.message; }
+}
 
 // ---------- connectors ----------
 // One screen that answers "what is wired up and what does it let an agent do", with a live

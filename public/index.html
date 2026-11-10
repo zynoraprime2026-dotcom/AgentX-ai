@@ -35,6 +35,7 @@
       <button class="navbtn" data-view="conversations" title="Read what people actually asked">💬 Conversations</button>
       <button class="navbtn" data-view="reminders" title="Scheduled messages your agents push">⏰ Reminders</button>
       <button class="navbtn" data-view="triggers" title="Watch an external feed and message when it changes">🔔 Triggers</button>
+      <button class="navbtn" data-view="pagesview" title="Page profile, daily targets and the cron heartbeat">🕌 Pages</button>
       <button class="navbtn" data-view="channels" title="WhatsApp and Telegram connections">📡 Channels</button>
       <button class="navbtn" data-view="connectors" title="GitHub, email, WhatsApp, Ilm and the rest">🔌 Connectors</button>
       <button class="navbtn" data-view="billing" title="Plans and limits">💳 Plan</button>
@@ -221,6 +222,47 @@
       <p class="muted" style="margin-top:-6px">Every service an agent can reach, what it enables, and whether it answers right now. Keys live on the server, never in a chat.</p>
       <div class="cards" id="connTiles"></div>
       <div id="connList" style="margin-top:18px"></div>
+    </section>
+
+    <!-- PAGES -->
+    <section id="view-pagesview" class="view hidden">
+      <div class="row-between">
+        <h1>Pages</h1>
+        <div class="conv-tools">
+          <select id="pgPick" class="input" style="min-width:200px"></select>
+          <button class="btn small" id="pgReload">Reload</button>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:-6px">What each Page says about itself, which Page each daily run serves, and the record of runs that actually happened. A profile change is previewed before it is sent.</p>
+
+      <div class="card" style="margin-bottom:16px">
+        <h3 style="margin-top:0">Profile</h3>
+        <div id="pgProfile" class="muted">Pick a Page.</div>
+        <div class="grid2" id="pgFields" style="margin-top:10px"></div>
+        <div class="row-between" style="margin-top:12px">
+          <span id="pgNote" class="muted"></span>
+          <span>
+            <button class="btn small" id="pgPreview">Preview change</button>
+            <button class="btn small" id="pgApply" disabled>Apply</button>
+          </span>
+        </div>
+        <div id="pgDiff" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <h3 style="margin-top:0">Daily targets</h3>
+        <div class="grid2" id="pgSchedule"></div>
+        <div class="row-between" style="margin-top:12px">
+          <span id="pgSchedNote" class="muted"></span>
+          <button class="btn small" id="pgSchedSave">Save targets</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Cron heartbeat</h3>
+        <p class="muted" style="margin-top:-4px">Every scheduled run stamps its name here when it fires, which is how a missed post is told apart from a missed cron.</p>
+        <div id="pgHits" class="table-wrap"><p class="muted">Loading…</p></div>
+      </div>
     </section>
 
     <!-- ANALYTICS -->

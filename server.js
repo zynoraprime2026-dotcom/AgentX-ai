@@ -2611,6 +2611,58 @@ app.get('/api/admin/ig-status', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
 });
 
+// ---------- Page settings and the cron heartbeat, for the dashboard ----------
+// The same capabilities the chat has, with the same rule: a change is previewed first and
+// only applied when the request says confirm=1. The dashboard is a client like any other,
+// so it does not get to skip the preview.
+api.get('/admin/page-settings', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const { social, page, token } = await pageTarget(req.query.page);
+    const d = await social.pageProfile(page.id, token);
+    const editable = {};
+    for (const k of social.EDITABLE_FIELDS) editable[k] = d[k] == null ? '' : d[k];
+    const pages = [];
+    try {
+      for (const p of (await social.listPages())) pages.push(p.name);
+    } catch (e) { /* the schedule names are still useful without the directory */ }
+    if (!pages.length) {
+      const map = await dailySchedule();
+      for (const slot of ['morning', 'evening', 'promo']) if (map[slot] && map[slot].page && !pages.includes(map[slot].page)) pages.push(map[slot].page);
+    }
+    return res.json({ ok: true, page: page.name, pages, profile: d, editable, fields: social.EDITABLE_FIELDS });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 220) }); }
+});
+
+api.post('/admin/page-settings', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const { social, page, token } = await pageTarget(body.page);
+    const changes = (body.changes && typeof body.changes === 'object') ? body.changes : {};
+    const allowed = {};
+    for (const [k, v] of Object.entries(changes)) {
+      if (social.EDITABLE_FIELDS.includes(k) && String(v || '').trim()) allowed[k] = String(v).slice(0, 2000);
+    }
+    if (!Object.keys(allowed).length) return res.status(400).json({ error: 'no changeable field was supplied; allowed: ' + social.EDITABLE_FIELDS.join(', ') });
+    const before = await social.pageProfile(page.id, token, Object.keys(allowed));
+    const diff = Object.keys(allowed).map((k) => ({ field: k, from: before[k] == null ? '' : String(before[k]), to: allowed[k] }))
+      .filter((d) => d.from !== d.to);
+    if (!diff.length) return res.json({ ok: true, page: page.name, applied: false, unchanged: true, diff: [], message: 'Nothing differs, so nothing was sent to Facebook.' });
+    if (String(req.query.confirm || '') !== '1') {
+      return res.json({ ok: true, page: page.name, applied: false, preview: true, diff, message: 'Preview only. Send confirm=1 to apply.' });
+    }
+    const out = await social.updatePage(page.id, token, allowed);
+    return res.json({ ok: true, page: page.name, applied: true, diff, changed: Object.keys(out.applied) });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 250) }); }
+});
+
+api.get('/admin/cron-hits', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const hits = await cronHits();
+  return res.json({ ok: true, count: hits.length, hits });
+});
+
 // Reads a Page profile so the settings tools can be proven from outside a chat.
 app.get('/api/admin/page-profile', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
