@@ -9,6 +9,15 @@ let suiteStatus = null;
 let kbDocs = [];
 let languages = { en: 'English' };
 
+// A founder key is 48 characters. Checking the length here stops a truncated paste from
+// spending one of the few recovery attempts the server allows.
+function founderKeyProblem(key) {
+  const k = String(key || '').trim();
+  if (!k) return 'Paste your founder key.';
+  if (k.length !== 48) return 'That key is ' + k.length + ' characters; a founder key is 48. Copy the whole thing.';
+  return '';
+}
+
 async function api(path, opts = {}) {
   const r = await fetch('/api' + path, {
     cache: 'no-store',

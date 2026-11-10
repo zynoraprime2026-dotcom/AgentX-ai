@@ -36,7 +36,10 @@ function rateLimit(max, windowMs) {
   return (req, res, next) => {
     const k = req.path + '|' + req.ip, now = Date.now();
     const hits = (loginHits.get(k) || []).filter(t => now - t < windowMs);
-    if (hits.length >= max) return res.status(429).json({ error: 'too many attempts, try again later' });
+    if (hits.length >= max) {
+      const waitMin = Math.max(1, Math.ceil((windowMs - (now - hits[0])) / 60000));
+      return res.status(429).json({ error: 'too many attempts, try again in about ' + waitMin + ' minute' + (waitMin === 1 ? '' : 's'), retryAfterMinutes: waitMin });
+    }
     hits.push(now); loginHits.set(k, hits); next();
   };
 }
@@ -165,7 +168,12 @@ api.post('/auth/login', rateLimit(10, 900e3), async (req, res) => {
 
 // Founder-key recovery: no email provider is involved, so the founder key is the
 // reset channel. This is the only way back in for an account whose password is lost.
-api.post('/auth/recover', rateLimit(6, 3600e3), async (req, res) => {
+api.post('/auth/recover', rateLimit(10, 3600e3), async (req, res) => {
+  // A founder key is fixed in length, so a short one is a bad paste, not a wrong secret: say
+  // so plainly and do not make the person guess.
+  if (req.body && req.body.founderKey && String(req.body.founderKey).trim().length !== String(process.env.ADMIN_KEY || '').length) {
+    return res.status(400).json({ error: 'That founder key looks truncated: ' + String(req.body.founderKey).trim().length + ' characters instead of ' + String(process.env.ADMIN_KEY || '').length + '.' });
+  }
   const { email, founderKey, password } = req.body || {};
   const em = String(email || '').trim().toLowerCase();
   if (String(password || '').length < 6) return res.status(400).json({ error: 'new password must be at least 6 characters' });
