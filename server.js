@@ -3244,7 +3244,7 @@ api.post('/admin/post-edit', async (req, res) => {
       ? await social.recentPosts(page.id, 10).then((list) => (list.posts || []).find((p) => String(p.id) === String(body.postId)))
       : await social.lastPagePost(page.id, page.token);
     if (!post) return res.status(404).json({ error: 'that post is not on ' + page.name });
-    if (String(body.confirm) !== '1') {
+    if (String(body.confirm || (req.query && req.query.confirm) || '') !== '1') {
       return res.json({ ok: true, applied: false, page: page.name, post: { id: post.id, url: post.url }, now: post.message || '', after: message });
     }
     await social.editPostMessage(post.id, message, page.token);
@@ -3259,7 +3259,7 @@ api.post('/admin/post-delete', async (req, res) => {
     const { social, page } = await pageTarget(String(body.page || ''));
     const post = await social.lastPagePost(page.id, page.token);
     if (!post) return res.status(404).json({ error: 'that Page has no posts' });
-    if (String(body.confirm) !== '1') {
+    if (String(body.confirm || (req.query && req.query.confirm) || '') !== '1') {
       return res.json({ ok: true, applied: false, page: page.name, post: { id: post.id, url: post.url }, now: post.message || '' });
     }
     await social.deletePost(post.id, page.token);
