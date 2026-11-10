@@ -2756,6 +2756,19 @@ api.get('/cron/daily-post', async (req, res) => {
     if (out.claimSaved === false) trouble.push('the day was not recorded: ' + (out.claimError || 'unknown'));
     if (out.guard) trouble.push('guard: ' + out.guard);
     if (trouble.length) out.alert = await alertOwner('Daily post ' + (out.slot || '') + ' ' + (out.ref || '') + '\n' + trouble.join('\n'));
+    // The hadith rides the same two runs. It alternates Pages by day rather than asking
+    // for a third cron slot, and it keeps its own claim so the two posts never collide.
+    if (!out.dry) {
+      out.hadith = await runHadithPost(String(req.query.slot || '') || out.slot || '', Boolean(out.force));
+      if (out.hadith) {
+        const ht = [];
+        if (out.hadith.facebook && out.hadith.facebook.error) ht.push('Hadith Facebook: ' + out.hadith.facebook.error);
+        if (out.hadith.instagram && out.hadith.instagram.error) ht.push('Hadith Instagram: ' + out.hadith.instagram.error);
+        if (out.hadith.error) ht.push('Hadith: ' + out.hadith.error);
+        if (out.hadith.skipped) ht.push(out.hadith.skipped);
+        if (ht.length) await alertOwner('Daily hadith ' + (out.hadith.ref || '') + '\n' + ht.join('\n'));
+      }
+    }
     out.workflows = await runSlotWorkflows(String(req.query.slot || '') || out.slot || '');
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
@@ -2898,6 +2911,35 @@ api.post('/runs/:id/:decision(approve|reject)', async (req, res) => {
   } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 300) }); }
 });
 
+// The hadith post reuses the slot schedule: whichever Page owns the slot also owns that
+// day's hadith, so nothing new has to be configured.
+async function runHadithPost(slot, force) {
+  const hadith = require('./lib/hadith-daily');
+  try {
+    const map = await dailySchedule();
+    const target = map[slotForNow(slot)] || map[slotForNow()];
+    const deps = {
+      ilm: (p) => ilmCall(p, null, { as: 'json' }),
+      studio: async (p, body) => JSON.parse(await studioCall(p, body)),
+      social: require('./lib/social'),
+      page: target.page,
+      igAccount: target.igAccount,
+      slot: slotForNow(slot),
+      force: !!force
+    };
+    deps.social.setToken(await getPageToken());
+    if (target.igAccount) {
+      const ig = require('./lib/instagram');
+      try { ig.setToken(await getPageToken()); } catch (e) {}
+      try { ig.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
+      deps.instagram = ig;
+    }
+    return await hadith.run(deps);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 200), kind: 'hadith' };
+  }
+}
+
 // Runs every enabled workflow attached to this cron slot, and reports each one. A failing
 // workflow must not stop the others or the daily post that already went out.
 async function runSlotWorkflows(slot) {
@@ -2921,6 +2963,35 @@ async function runSlotWorkflows(slot) {
   return out;
 }
 
+// The hadith post on its own: ?dry=1 previews it, ?force=1 posts even if today is done.
+api.all('/admin/hadith-post', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const q = { ...(req.query || {}), ...(req.body || {}) };
+  try {
+    if (String(q.dry) === '1') {
+      const hadith = require('./lib/hadith-daily');
+      const map = await dailySchedule();
+      const slot = q.slot === 'morning' || q.slot === 'evening' ? q.slot : (q.slot || '');
+      const target = map[slotForNow(slot)] || map[slotForNow()];
+      const out = await hadith.run({
+        ilm: (p) => ilmCall(p, null, { as: 'json' }),
+        studio: async (p, body) => JSON.parse(await studioCall(p, body)),
+        page: target.page,
+        igAccount: target.igAccount,
+        slot: slotForNow(slot),
+        date: q.date ? new Date(q.date) : undefined,
+        dry: true,
+        force: true,
+        generateImage: (prompt) => studioCall('/v1/image/generate', { prompt, width: 1024, height: 1280 }).then((t) => JSON.parse(t))
+          .then((j) => j && j.url)
+      });
+      return res.json({ ok: true, ...out });
+    }
+    const out = await runHadithPost(String(q.slot || ''), String(q.force) === '1');
+    return res.json({ ok: out.ok !== false, ...out });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 300) }); }
+});
+
 // What each slot last did, including the failures. Without this, "did today go out?" was
 // a question only Facebook could answer.
 api.get('/admin/daily-last', async (req, res) => {
@@ -2932,6 +3003,10 @@ api.get('/admin/daily-last', async (req, res) => {
       out[slot] = raw ? JSON.parse(raw) : null;
     } catch (e) { out[slot] = { error: String((e && e.message) || e).slice(0, 160) }; }
   }
+  try {
+    const raw = await db.getSocial('hadith_last');
+    out.hadith = raw ? JSON.parse(raw) : null;
+  } catch (e) { out.hadith = { error: String((e && e.message) || e).slice(0, 160) }; }
   let cursor = null;
   try { cursor = JSON.parse((await db.getSocial('daily_cursor')) || 'null'); } catch (e) {}
   res.json({ ok: true, date: new Date().toISOString().slice(0, 10), slots: out, cursor });

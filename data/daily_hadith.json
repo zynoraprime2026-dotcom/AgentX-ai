@@ -1,0 +1,89 @@
+{
+  "note": "Verified references only. The text is fetched from ilm-api at send time and never composed here; the scene is what studio-api is asked to draw.",
+  "entries": [
+    {
+      "collection": "bukhari",
+      "number": 13,
+      "theme": "Brotherhood in faith",
+      "scene": "a warmly lit masjid courtyard at dusk, rows of empty prayer rugs, no people, arches and hanging lamps, deep green and gold"
+    },
+    {
+      "collection": "bukhari",
+      "number": 6114,
+      "theme": "True strength",
+      "scene": "an empty masjid interior with soft dawn light on a minbar, no people, muted stone and gold"
+    },
+    {
+      "collection": "muslim",
+      "number": 2699,
+      "theme": "Ease for the one in difficulty",
+      "scene": "a single open Quran on a wooden rehal beside prayer beads, soft window light, no people"
+    },
+    {
+      "collection": "bukhari",
+      "number": 5353,
+      "theme": "Caring for widows and the poor",
+      "scene": "a quiet street of old mud-brick houses at golden hour, a water jar by a doorway, no people"
+    },
+    {
+      "collection": "tirmidhi",
+      "number": 2517,
+      "theme": "Seeking knowledge",
+      "scene": "an ancient manuscript open on a wooden desk with a brass lamp, no people, warm candlelight"
+    },
+    {
+      "collection": "tirmidhi",
+      "number": 2518,
+      "theme": "Contentment with little",
+      "scene": "a simple clay bowl of dates and a glass of water on a woven mat, soft daylight, no people"
+    },
+    {
+      "collection": "bukhari",
+      "number": 6464,
+      "theme": "Steadiness in worship",
+      "scene": "an empty prayer row seen from the front, geometric carpet pattern leading to a mihrab, blue hour light"
+    },
+    {
+      "collection": "bukhari",
+      "number": 1,
+      "theme": "Intentions",
+      "scene": "an old leather-bound book closed on a wooden table with a pen, no people, warm lamp light"
+    },
+    {
+      "collection": "tirmidhi",
+      "number": 1924,
+      "theme": "Mercy",
+      "scene": "a grey sky over a desert plain with a lone acacia tree, no people, soft light"
+    },
+    {
+      "collection": "nasai",
+      "number": 5027,
+      "theme": "The path of knowledge",
+      "scene": "a stone archway opening onto a sunlit courtyard with a fountain, no people"
+    },
+    {
+      "collection": "muslim",
+      "number": 2564,
+      "theme": "Sincerity in worship",
+      "scene": "a crescent moon over an empty masjid dome and minaret at night, stars, no people"
+    },
+    {
+      "collection": "bukhari",
+      "number": 8,
+      "theme": "Islam's five pillars",
+      "scene": "five brass lanterns hanging in a dark arched corridor, warm glow, no people"
+    },
+    {
+      "collection": "bukhari",
+      "number": 39,
+      "theme": "Religion is ease",
+      "scene": "a still lake reflecting a mountain mosque at dawn, no people, calm water"
+    },
+    {
+      "collection": "muslim",
+      "number": 2588,
+      "theme": "Guarding the glance",
+      "scene": "a wooden lattice screen casting patterned light on an empty floor, no people"
+    }
+  ]
+}

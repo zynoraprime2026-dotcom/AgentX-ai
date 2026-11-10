@@ -191,3 +191,19 @@ The duplicate guard used to move on to the next verse when today's copy was alre
 Page, which posted a second time in the same slot (two appeared seventeen minutes apart).
 It now treats the slot as done, records that decision with the time the copy was seen, and
 leaves the cursor alone.
+
+## The daily hadith post
+
+A second daily piece sits beside the ayah: one narration, on whichever Page owns that day
+(alternating by day so neither Page needs a third cron run), claimed separately in
+`hadith_last` with its own rotation cursor.
+
+The Arabic and English are fetched from ilm-api by collection and number, never written by a
+model: a composed hadith is a fabrication of the Prophet's words. `data/daily_hadith.json`
+holds only references that were checked to return both languages, each with an image scene
+that forbids people, faces and Quranic calligraphy. A failed fetch publishes nothing and says
+why; it never falls back to a remembered narration.
+
+`GET|POST /api/admin/hadith-post?dry=1` previews (caption and image, nothing posted),
+`?force=1` posts even if today is done. `GET /api/admin/daily-last` reports it under
+`hadith`. Tests: `node test-hadith-daily.js` (20 assertions).
