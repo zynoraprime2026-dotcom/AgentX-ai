@@ -2788,7 +2788,9 @@ async function workflowDeps() {
         deps.social.setToken(pgTok);
         if (deps.instagram) deps.instagram.setToken(pgTok);
       } catch (e) { /* tokens may already be installed by another path */ }
-      const out = await daily.run({ ...deps, slot: wantSlot, force: true });
+      // The daily claim still rules: a workflow asking to post a slot the cron already
+      // filled is refused rather than posting a second time.
+      const out = await daily.run({ ...deps, slot: wantSlot });
       const links = {};
       if (out.facebook && out.facebook.url) links.facebook = out.facebook.url;
       if (out.instagram && out.instagram.permalink) links.instagram = out.instagram.permalink;
