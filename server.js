@@ -3072,7 +3072,7 @@ app.get('/api/admin/providers', async (req, res) => {
   };
   out.gemini.keySet = Boolean(gk);
   out.groq.keySet = Boolean(qk);
-  try { out.cronHits = ((await db.getSocial('cron_hits')) || {}).hits || []; } catch (e) { out.cronHits = []; }
+  try { out.cronHits = await cronHits(); } catch (e) { out.cronHits = []; }
   out.verdict = out.gemini.ok ? 'Gemini answers; Groq is the spare'
     : (out.groq.ok ? 'Gemini is failing, Groq is carrying replies' : 'Neither lane is working, so only commands and small talk will answer');
   return res.json({ ok: true, ...out });
@@ -3802,12 +3802,21 @@ function isFounderOrKey(req) {
 // A silent cron leaves no trace, so "did it run?" was unanswerable: the watchdog only speaks
 // when something is wrong, and a healthy day looks exactly like a schedule that never fired.
 // Every cron entry stamps its name here, whether or not it ends up saying anything.
+// The store hands back the raw text it was given, so the JSON is parsed here. Writing an
+// object and reading it as one was why the first version always reported zero stamps.
+async function cronHits() {
+  try {
+    const raw = await db.getSocial('cron_hits');
+    const d = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw || {});
+    return Array.isArray(d.hits) ? d.hits.filter((h) => h && h.at) : [];
+  } catch (e) { return []; }
+}
+
 async function noteCron(entry) {
   try {
-    const cur = (await db.getSocial('cron_hits')) || {};
-    const hits = (Array.isArray(cur.hits) ? cur.hits : []).filter((h) => h && h.at);
+    const hits = await cronHits();
     hits.unshift({ at: new Date().toISOString(), entry: String(entry).slice(0, 40) });
-    await db.putSocial('cron_hits', { hits: hits.slice(0, 60) });
+    await db.putSocial('cron_hits', JSON.stringify({ hits: hits.slice(0, 60) }));
   } catch (e) { /* bookkeeping must never break a run */ }
 }
 
