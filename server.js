@@ -3228,7 +3228,7 @@ api.get('/admin/last-post', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
     const { social, page } = await pageTarget(String(req.query.page || ''));
-    const post = await social.lastPagePost(page.id);
+    const post = await social.lastPagePost(page.id, page.token);
     return res.json({ ok: true, page: page.name, pageId: page.id, post });
   } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 240) }); }
 });
@@ -3242,12 +3242,12 @@ api.post('/admin/post-edit', async (req, res) => {
     const { social, page } = await pageTarget(String(body.page || ''));
     const post = body.postId
       ? await social.recentPosts(page.id, 10).then((list) => (list.posts || []).find((p) => String(p.id) === String(body.postId)))
-      : await social.lastPagePost(page.id);
+      : await social.lastPagePost(page.id, page.token);
     if (!post) return res.status(404).json({ error: 'that post is not on ' + page.name });
     if (String(body.confirm) !== '1') {
       return res.json({ ok: true, applied: false, page: page.name, post: { id: post.id, url: post.url }, now: post.message || '', after: message });
     }
-    await social.editPostMessage(post.id, message);
+    await social.editPostMessage(post.id, message, page.token);
     return res.json({ ok: true, applied: true, page: page.name, post: { id: post.id, url: post.url } });
   } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 240) }); }
 });
@@ -3257,12 +3257,12 @@ api.post('/admin/post-delete', async (req, res) => {
   const body = req.body || {};
   try {
     const { social, page } = await pageTarget(String(body.page || ''));
-    const post = await social.lastPagePost(page.id);
+    const post = await social.lastPagePost(page.id, page.token);
     if (!post) return res.status(404).json({ error: 'that Page has no posts' });
     if (String(body.confirm) !== '1') {
       return res.json({ ok: true, applied: false, page: page.name, post: { id: post.id, url: post.url }, now: post.message || '' });
     }
-    await social.deletePost(post.id);
+    await social.deletePost(post.id, page.token);
     return res.json({ ok: true, applied: true, deleted: post.id, page: page.name });
   } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 240) }); }
 });
@@ -3292,7 +3292,9 @@ async function pageTarget(name) {
   if (!wanted) throw new Error('no Page is configured');
   const page = await social.resolvePage(wanted).catch(() => null);
   if (!page) throw new Error('unknown or unreachable Page: ' + String(wanted).slice(0, 80));
-  return { social, page };
+  // Reading or editing a Page's own posts needs that PAGE's token. The system-user token
+  // answers 190 "User access token is not supported" for the new Pages experience.
+  return { social, page, token: page.token };
 }
 
 const shorten = (t, n) => {
@@ -3306,7 +3308,7 @@ async function postActionFromChat(verb, arg) {
   const { social, page } = await pageTarget(arg && arg.page);
 
   if (v === 'last') {
-    const p = await social.lastPagePost(page.id);
+    const p = await social.lastPagePost(page.id, page.token);
     if (!p) return 'That Page has no posts yet.';
     return 'Latest post on ' + page.name + ', ' + String(p.createdTime).replace('T', ' ').slice(0, 16) + ':\n\n' +
       shorten(p.message, 400) + (p.url ? '\n\n' + p.url : '');
@@ -3315,11 +3317,11 @@ async function postActionFromChat(verb, arg) {
   if (v === 'edit') {
     const message = String((arg && arg.message) || '').trim();
     if (!message) return 'Send it as: fix caption <the new caption>';
-    const p = await social.lastPagePost(page.id);
+    const p = await social.lastPagePost(page.id, page.token);
     if (!p) return 'There is no post on ' + page.name + ' to edit.';
     await setPendingAction({
       kind: 'edit', page: page.name, pageId: page.id, postId: p.id,
-      oldMessage: p.message, newMessage: message,
+      oldMessage: p.message, newMessage: message, token: page.token,
       url: p.url, at: new Date().toISOString()
     });
     return 'I will change the caption on ' + page.name + ' (' + (p.url || p.id) + ').\n\n' +
@@ -3329,11 +3331,11 @@ async function postActionFromChat(verb, arg) {
   }
 
   if (v === 'delete') {
-    const p = await social.lastPagePost(page.id);
+    const p = await social.lastPagePost(page.id, page.token);
     if (!p) return 'There is no post on ' + page.name + ' to delete.';
     await setPendingAction({
       kind: 'delete', page: page.name, pageId: page.id, postId: p.id,
-      oldMessage: p.message, url: p.url, at: new Date().toISOString()
+      oldMessage: p.message, url: p.url, token: page.token, at: new Date().toISOString()
     });
     return 'This deletes the latest post on ' + page.name + ' (' + (p.url || p.id) + '):\n\n' +
       shorten(p.message, 300) + '\n\nIts likes and comments go with it. Reply yes to delete, or no to keep it.';
@@ -3348,11 +3350,11 @@ async function postActionFromChat(verb, arg) {
     }
     try {
       if (pending.kind === 'edit') {
-        await social.editPostMessage(pending.postId, pending.newMessage);
+        await social.editPostMessage(pending.postId, pending.newMessage, pending.token);
         await clearPendingAction();
         return 'Caption updated on ' + pending.page + '.' + (pending.url ? '\n' + pending.url : '');
       }
-      await social.deletePost(pending.postId);
+      await social.deletePost(pending.postId, pending.token);
       await clearPendingAction();
       return 'Deleted the post from ' + pending.page + '.';
     } catch (e) {
