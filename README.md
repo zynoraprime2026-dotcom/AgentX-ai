@@ -218,3 +218,23 @@ are owner-only, and a stranger's "post hadith" is refused rather than ignored.
 
 A skipped ayah run now reports `page` and `skippedPage`, because "nothing happened" without
 naming the Page is how the wrong-Page bug hid for a day.
+
+## Editing what is already on the Page
+
+`pages_manage_posts` covers the Page's own posts, so a wrong caption or a bad post can be
+fixed without opening Facebook:
+
+- "last post" / `/lastpost` shows the newest post on the slot's Page.
+- "fix caption ..." / "change the caption to ..." / `/fixcaption ...` stages an edit and
+  answers with the old caption, the new one, and the post it belongs to. Editing keeps the
+  same post and its likes and comments.
+- "delete the last post" / `/deletepost` stages a deletion and warns that likes and comments
+  go with it.
+- "yes" applies the staged action, "no" drops it. A yes with nothing staged is not a
+  command, an ordinary sentence beginning with "yes" is left alone, and a failed apply keeps
+  the action staged so it can be retried.
+
+Staged actions live in `agx_social.pending_post_action`, owner-only through `ctx.canManage`.
+Comment replies and Page details still need `pages_manage_engagement` and
+`pages_manage_metadata`, which the token does not carry. Tests: `node test-post-edit.js`
+(23 assertions).

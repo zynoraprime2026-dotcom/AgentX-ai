@@ -3222,6 +3222,103 @@ async function postDailyFromChat(ctx) {
   const head = 'Published the ' + out.slot + ' ayah (' + out.ref + ').';
   return [head, fb, ig].filter(Boolean).join('\n');
 }
+// ---------- editing what is already on the Page ----------
+// pages_manage_posts allows a caption fix or a delete, so a wrong line no longer needs a
+// trip to Facebook. Both are destructive-ish, so nothing happens on the first request:
+// the action is staged, the owner is shown exactly what will change, and a yes applies it.
+const PENDING_KEY = 'pending_post_action';
+
+async function getPendingAction() {
+  try { return JSON.parse((await db.getSocial(PENDING_KEY)) || 'null'); } catch (e) { return null; }
+}
+async function setPendingAction(a) {
+  await db.putSocial(PENDING_KEY, JSON.stringify(a));
+  return a;
+}
+async function clearPendingAction() {
+  await db.putSocial(PENDING_KEY, 'null');
+}
+
+async function pageTarget(name) {
+  const social = require('./lib/social');
+  social.setToken(await getPageToken());
+  const map = await dailySchedule();
+  const wanted = name || (map[slotForNow()] || map.morning).page;
+  if (!wanted) throw new Error('no Page is configured');
+  const page = await social.resolvePage(wanted).catch(() => null);
+  if (!page) throw new Error('unknown or unreachable Page: ' + String(wanted).slice(0, 80));
+  return { social, page };
+}
+
+const shorten = (t, n) => {
+  const clean = String(t || '').replace(/\s+/g, ' ').trim();
+  return clean.length > n ? clean.slice(0, n - 1) + '\u2026' : clean;
+};
+
+// ---- chat: staging, previewing, applying ----
+async function postActionFromChat(verb, arg) {
+  const v = String(verb || '').toLowerCase();
+  const { social, page } = await pageTarget(arg && arg.page);
+
+  if (v === 'last') {
+    const p = await social.lastPagePost(page.id);
+    if (!p) return 'That Page has no posts yet.';
+    return 'Latest post on ' + page.name + ', ' + String(p.createdTime).replace('T', ' ').slice(0, 16) + ':\n\n' +
+      shorten(p.message, 400) + (p.url ? '\n\n' + p.url : '');
+  }
+
+  if (v === 'edit') {
+    const message = String((arg && arg.message) || '').trim();
+    if (!message) return 'Send it as: fix caption <the new caption>';
+    const p = await social.lastPagePost(page.id);
+    if (!p) return 'There is no post on ' + page.name + ' to edit.';
+    await setPendingAction({
+      kind: 'edit', page: page.name, pageId: page.id, postId: p.id,
+      oldMessage: p.message, newMessage: message,
+      url: p.url, at: new Date().toISOString()
+    });
+    return 'I will change the caption on ' + page.name + ' (' + (p.url || p.id) + ').\n\n' +
+      'Now: ' + shorten(p.message, 300) + '\n\n' +
+      'After: ' + shorten(message, 300) + '\n\n' +
+      'Keep the same post and its likes. Reply yes to apply, or no to leave it.';
+  }
+
+  if (v === 'delete') {
+    const p = await social.lastPagePost(page.id);
+    if (!p) return 'There is no post on ' + page.name + ' to delete.';
+    await setPendingAction({
+      kind: 'delete', page: page.name, pageId: page.id, postId: p.id,
+      oldMessage: p.message, url: p.url, at: new Date().toISOString()
+    });
+    return 'This deletes the latest post on ' + page.name + ' (' + (p.url || p.id) + '):\n\n' +
+      shorten(p.message, 300) + '\n\nIts likes and comments go with it. Reply yes to delete, or no to keep it.';
+  }
+
+  if (v === 'yes' || v === 'no') {
+    const pending = await getPendingAction();
+    if (!pending) return 'Nothing is waiting for a yes.';
+    if (v === 'no') {
+      await clearPendingAction();
+      return 'Left it alone. Nothing changed on ' + pending.page + '.';
+    }
+    try {
+      if (pending.kind === 'edit') {
+        await social.editPostMessage(pending.postId, pending.newMessage);
+        await clearPendingAction();
+        return 'Caption updated on ' + pending.page + '.' + (pending.url ? '\n' + pending.url : '');
+      }
+      await social.deletePost(pending.postId);
+      await clearPendingAction();
+      return 'Deleted the post from ' + pending.page + '.';
+    } catch (e) {
+      // A failed apply keeps the action staged so the owner can retry or say no.
+      return 'Facebook refused it: ' + String((e && e.message) || e).slice(0, 200) +
+        '\nThe action is still waiting; say yes to retry or no to drop it.';
+    }
+  }
+  return null;
+}
+
 // The daily hadith, driven from the owner's chat the same way the ayah is: "hadith" shows
 // what would go out, "post hadith" sends it now.
 async function previewHadithFromChat() {
@@ -3319,6 +3416,7 @@ const commands = require('./lib/commands').create({
   dailyPreview: previewDailyFromChat,
   hadithPreview: previewHadithFromChat,
   postHadith: postHadithFromChat,
+  postAction: postActionFromChat,
   workflowCommand: workflowFromChat
 });
 
