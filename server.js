@@ -3222,6 +3222,36 @@ async function postDailyFromChat(ctx) {
   const head = 'Published the ' + out.slot + ' ayah (' + out.ref + ').';
   return [head, fb, ig].filter(Boolean).join('\n');
 }
+// The daily hadith, driven from the owner's chat the same way the ayah is: "hadith" shows
+// what would go out, "post hadith" sends it now.
+async function previewHadithFromChat() {
+  const hadith = require('./lib/hadith-daily');
+  const map = await dailySchedule();
+  const slot = slotForNow();
+  const target = map[slot] || map.morning;
+  const out = await hadith.run({
+    ilm: (p) => ilmCall(p, null, { as: 'json' }),
+    studio: async (p, body) => JSON.parse(await studioCall(p, body)),
+    page: target.page, igAccount: target.igAccount, slot,
+    force: true, dry: true,
+    generateImage: (prompt) => studioCall('/v1/image/generate', { prompt, width: 1024, height: 1280 })
+      .then((t) => JSON.parse(t)).then((j) => j && j.url)
+  });
+  if (out.error) return 'The hadith post cannot go out: ' + out.error;
+  return 'Today\'s hadith: ' + out.ref + ' (' + out.theme + ') for ' + (target.page || 'the Page') +
+    '\n\n' + String(out.caption || '').split('\n\n').slice(-3).join('\n\n') +
+    (out.imageUrl && !String(out.imageUrl).startsWith('error:') ? '\n\nImage ready: ' + out.imageUrl : '');
+}
+
+async function postHadithFromChat() {
+  const out = await runHadithPost(slotForNow(), false);
+  if (out.skipped) return 'The hadith for today is already up (' + out.ref + '). Send "post hadith" again tomorrow, or ask me to force it.';
+  if (out.error) return 'The hadith post did not go out: ' + out.error;
+  const fb = out.facebook && out.facebook.url ? 'Facebook: ' + out.facebook.url : (out.facebook && out.facebook.error ? 'Facebook failed: ' + out.facebook.error : '');
+  const ig = out.instagram && out.instagram.permalink ? 'Instagram: ' + out.instagram.permalink : '';
+  return ['Posted the hadith ' + out.ref + ' to ' + (out.page || 'the Page') + '.', fb, ig].filter(Boolean).join('\n');
+}
+
 // The owner can see what is queued before it goes out, and swap a verse if he wants to.
 async function previewDailyFromChat(ctx) {
   const rows = await daily.upcoming(8);
@@ -3279,6 +3309,8 @@ const commands = require('./lib/commands').create({
   ilm: (path, params) => ilmCall(path, params, { as: 'json' }),
   postDaily: postDailyFromChat,
   dailyPreview: previewDailyFromChat,
+  hadithPreview: previewHadithFromChat,
+  postHadith: postHadithFromChat,
   workflowCommand: workflowFromChat
 });
 

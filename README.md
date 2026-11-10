@@ -207,3 +207,14 @@ why; it never falls back to a remembered narration.
 `GET|POST /api/admin/hadith-post?dry=1` previews (caption and image, nothing posted),
 `?force=1` posts even if today is done. `GET /api/admin/daily-last` reports it under
 `hadith`. Tests: `node test-hadith-daily.js` (20 assertions).
+
+### Hadith from the owner's chat
+
+"post hadith", "publish the daily hadith" and `/hadithpost` send today's narration and
+respect the claim (a second try says it is already up). "hadith", "hadith of the day" and
+`/hadithday` show what would go out, with the image, without posting. "post" still means the
+ayah: the hadith triggers are matched first, so neither can publish the other. All of them
+are owner-only, and a stranger's "post hadith" is refused rather than ignored.
+
+A skipped ayah run now reports `page` and `skippedPage`, because "nothing happened" without
+naming the Page is how the wrong-Page bug hid for a day.

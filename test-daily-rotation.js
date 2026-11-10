@@ -72,6 +72,21 @@ function deps(date, extra) {
   }));
   ok('the retry is not told the slot was taken', !retry.skipped && retry.ok === true, retry.skipped || JSON.stringify(retry.steps));
   ok('the retry saves the claim', Boolean(store['daily_last_' + retry.slot]), JSON.stringify(Object.keys(store)));
+
+  // ---------- a skipped run still says which Page it belongs to ----------
+  const claimed = await daily.run({
+    date: new Date(Date.UTC(2026, 11, 21)), page: 'Hikmah Hub',
+    social: { recentPosts: async () => ({ page: { id: 'p' }, posts: [] }), postImage: async () => ({ id: 'f', url: 'https://fb/1' }) },
+    studio: async () => ({ url: 'https://cdn/1.jpg' }), ilm: async () => { throw 1; }
+  });
+  const repeat = await daily.run({
+    date: new Date(Date.UTC(2026, 11, 21)), page: 'Hikmah Hub',
+    social: { recentPosts: async () => ({ page: { id: 'p' }, posts: [] }), postImage: async () => ({ id: 'f', url: 'https://fb/2' }) },
+    studio: async () => ({ url: 'https://cdn/2.jpg' }), ilm: async () => { throw 1; }
+  });
+  ok('the second run is skipped', /already published today/.test(String(repeat.skipped)), repeat.skipped);
+  ok('a skip names the Page it belongs to', repeat.page === 'Hikmah Hub' && repeat.skippedPage === 'Hikmah Hub', JSON.stringify({ page: repeat.page, skippedPage: repeat.skippedPage }));
+  ok('a skip reports the slot', repeat.slot === claimed.slot, repeat.slot + ' vs ' + claimed.slot);
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.log('ERROR', e); process.exit(1); });
