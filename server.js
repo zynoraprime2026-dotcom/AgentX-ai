@@ -2779,13 +2779,13 @@ async function workflowDeps() {
   };
 }
 
-api.get('/api/workflows', async (req, res) => {
+api.get('/workflows', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   const list = await db.listWorkflows();
   res.json({ ok: true, count: list.length, workflows: list });
 });
 
-api.post('/api/workflows', async (req, res) => {
+api.post('/workflows', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
     const saved = await workflows.save({ ...(req.body || {}), createdBy: (req.user && req.user.email) || 'admin-key' });
@@ -2793,7 +2793,7 @@ api.post('/api/workflows', async (req, res) => {
   } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 300) }); }
 });
 
-api.post('/api/workflows/delete', async (req, res) => {
+api.post('/workflows/delete', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   const id = String((req.body && req.body.id) || '');
   if (!id) return res.status(400).json({ error: 'send {"id":"..."}' });
@@ -2801,7 +2801,7 @@ api.post('/api/workflows/delete', async (req, res) => {
   res.json({ ok: true, deleted: id });
 });
 
-api.post('/api/workflows/:id/run', async (req, res) => {
+api.post('/workflows/:id/run', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   const wf = await db.getWorkflow(String(req.params.id));
   if (!wf) return res.status(404).json({ error: 'no such workflow: ' + req.params.id });
@@ -2816,19 +2816,19 @@ api.post('/api/workflows/:id/run', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 300) }); }
 });
 
-api.get('/api/runs', async (req, res) => {
+api.get('/runs', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   res.json({ ok: true, runs: await db.listRuns(req.query.limit) });
 });
 
-api.get('/api/runs/:id', async (req, res) => {
+api.get('/runs/:id', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   const run = await db.getRun(String(req.params.id));
   if (!run) return res.status(404).json({ error: 'no such run' });
   res.json({ ok: true, run });
 });
 
-api.post('/api/runs/:id/:decision(approve|reject)', async (req, res) => {
+api.post('/runs/:id/:decision(approve|reject)', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   try {
     const id = String(req.params.id);
