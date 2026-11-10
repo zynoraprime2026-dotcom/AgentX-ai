@@ -41,7 +41,7 @@ ok('past the grace it speaks', pastGrace.findings.some((f) => f.slot === 'mornin
 
 // ---- an old claim appears as missing today, not as a stale success
 r = run('2026-11-10T20:45:00Z', { morning: { date: '2026-11-09', page: "The salafi Da'wah" }, evening: null });
-ok('yesterday claim does not count for today', r.findings.filter((f) => f.level === 'missing').length === 2, JSON.stringify(r.findings));
+ok('yesterday claim does not count for today (all three slots are then missing)', r.findings.filter((f) => f.level === 'missing').length === 3, JSON.stringify(r.findings));
 
 // ---- unrecorded Page is softer than wrong Page, and does not make the day fail
 r = run('2026-11-10T12:00:00Z', { morning: { date: '2026-11-10', page: '', ref: '9:1' }, evening: null });

@@ -16,6 +16,14 @@
     {
       "path": "/api/cron/ig-refresh",
       "schedule": "0 6 * * 1"
+    },
+    {
+      "path": "/api/watchdog?slot=morning",
+      "schedule": "10 7 * * *"
+    },
+    {
+      "path": "/api/watchdog",
+      "schedule": "40 20 * * *"
     }
   ],
   "rewrites": [

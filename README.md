@@ -280,3 +280,43 @@ page token.
   no confirm means no change.
 
 Tests: `node test-comments.js` (24 assertions).
+
+## The watchdog
+
+The audit answers when asked. The watchdog asks on a timer, because a whole day once went
+missing while every run reported success.
+
+- `GET /api/watchdog` checks every slot; `GET /api/watchdog?slot=morning` checks one.
+  Cron-guarded like the rest, and listed in `PUBLIC_API`.
+- Findings of `missing` or `wrong_page` alert the owner over WhatsApp/Telegram through
+  `alertOwner`. `unknown_page` is reported but never wakes anyone: it is a warning about a
+  record, not a lost post.
+- One alert per problem per day, keyed `slot:level` in `agx_social.watchdog_alerts`. A failed
+  alert is not recorded, so the next check tries again instead of pretending the owner knows.
+- Crons: `10 7 * * *` for the morning slot, `40 20 * * *` for the whole day.
+- Logic lives in `lib/watchdog.js` (audit, sender and store all injected) so the once-a-day
+  rule is testable without a server. Tests: `node test-watchdog.js` (19 assertions).
+
+## The third daily post
+
+Vercel's posting runs are both spent on morning and evening, so the third Page rides the
+evening run instead of asking for another cron: same verse, same picture, published to
+`Zynora Prime` right after the evening post lands.
+
+- `dailySchedule()` now carries a `promo` slot (default page `Zynora Prime`, line
+  "Zynora Prime · a daily reflection"). `POST /api/admin/daily-schedule` can change the page,
+  the Instagram account or the line without a redeploy.
+- The run reuses the evening image (`imageReused`), keeps its own claim `daily_last_promo`,
+  never moves the shared verse cursor, makes no Story, and is skipped with `?nopromo=1`.
+- The audit treats `promo` as a real slot, due at 19:45 UTC, so a missing third post is
+  caught by the watchdog rather than noticed weeks later.
+
+## Instagram Stories
+
+`instagram.publishStory({account, imageUrl})` posts the same image as a 24-hour Story
+(`media_type=STORIES`, same container-then-publish dance as a feed post). `daily.run` makes
+one automatically whenever a feed post lands, records it as `story` in the slot record, and
+reports a failed Story without failing the post. `POST /api/admin/story {imageUrl, account,
+confirm}` drives it by hand; no confirm means no change.
+
+Tests: `node test-stories.js` (21 assertions).

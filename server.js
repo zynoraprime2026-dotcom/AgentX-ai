@@ -86,7 +86,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh', '/watchdog'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 const keepAlive = { on: false, url: '', everyMinutes: 10 };
@@ -2669,18 +2669,23 @@ const DAILY_DEFAULTS = {
   igAccount: process.env.DAILY_IG_ACCOUNT || 'the_salafi_dawah'
 };
 
+// The third slot has no cron of its own: Vercel gives a project a handful of runs a day and
+// both posting runs are spent. It is chained after the evening run instead, reusing that
+// run's verse and picture, so it costs no image generation and no extra scheduling.
+const PROMO_LINE = 'Zynora Prime · a daily reflection';
 async function dailySchedule() {
-  const map = { morning: { ...DAILY_DEFAULTS }, evening: { ...DAILY_DEFAULTS } };
+  const map = { morning: { ...DAILY_DEFAULTS }, evening: { ...DAILY_DEFAULTS }, promo: { page: 'Zynora Prime', igAccount: '', line: PROMO_LINE } };
   const raw = await db.getSocial('daily_schedule').catch(() => '');
   if (!raw) return map;
   let saved = null;
   try { saved = JSON.parse(String(raw)); } catch (e) { return map; }
-  for (const slot of ['morning', 'evening']) {
+  for (const slot of ['morning', 'evening', 'promo']) {
     const e = saved && saved[slot];
     if (e && typeof e === 'object') {
       if (e.page) map[slot].page = String(e.page).slice(0, 120);
       if (e.ig) map[slot].igAccount = String(e.ig).slice(0, 120);
       if (e.ig === null || e.ig === '') map[slot].igAccount = '';
+      if (slot === 'promo' && typeof e.line === 'string') map.promo.line = String(e.line).slice(0, 160);
     }
   }
   return map;
@@ -2699,7 +2704,8 @@ function slotForNow(when) {
 
 async function dailyDeps(slot) {
   const map = await dailySchedule();
-  const target = map[slotForNow(slot)] || map.morning;
+  const key = String(slot || '') === 'promo' ? 'promo' : slotForNow(slot);
+  const target = map[key] || map.morning;
   const deps = {
     ilm: (p) => ilmCall(p, null, { as: 'json' }),
     studio: async (p, body) => JSON.parse(await studioCall(p, body)),
@@ -2733,6 +2739,27 @@ api.get('/cron/ig-refresh', async (req, res) => {
     return res.json({ ok: true, refreshed: true, previousDaysLeft: days, expiresIn: out.expires_in });
   } catch (e) { return res.status(500).json({ ok: false, error: String(e.message).slice(0, 200) }); }
 });
+// The third post: the evening run's verse and picture, published to another Page. It keeps
+// its own claim (daily_last_promo) so the audit and the guards treat it as a real slot, and
+// it never moves the shared cursor, because the evening run already did that.
+async function runPromoPost(opts) {
+  const map = await dailySchedule();
+  const target = map.promo || {};
+  if (!target.page) return { skipped: 'no promo page configured in the schedule' };
+  const deps = await dailyDeps('promo');
+  deps.social.setToken(await getPageToken());
+  try {
+    return await daily.run({
+      ...deps,
+      slot: 'promo',
+      index: opts.index,
+      imageUrl: opts.imageUrl,
+      captionSuffix: target.line || PROMO_LINE,
+      stories: false
+    });
+  } catch (e) { return { error: String((e && e.message) || e).slice(0, 200) }; }
+}
+
 api.get('/cron/daily-post', async (req, res) => {
   if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
   const want = String(req.query.status || req.query.dry || '');
@@ -2769,6 +2796,14 @@ api.get('/cron/daily-post', async (req, res) => {
         if (ht.length) await alertOwner('Daily hadith ' + (out.hadith.ref || '') + '\n' + ht.join('\n'));
       }
     }
+    // Evening is the last real run of the day, so it carries the third Page with it.
+    if (!out.dry && String(out.slot || '') === 'evening' && out.ok && out.imageUrl && Number.isInteger(out.index) && String(req.query.nopromo || '') !== '1') {
+      out.promo = await runPromoPost({ index: out.index, imageUrl: out.imageUrl });
+      if (out.promo && (out.promo.error || (out.promo.facebook && out.promo.facebook.error))) {
+        const promoPage = ((await dailySchedule()).promo || {}).page || 'the third Page';
+        await alertOwner('Third post to ' + promoPage + '\n' + (out.promo.error || (out.promo.facebook && out.promo.facebook.error)));
+      }
+    }
     out.workflows = await runSlotWorkflows(String(req.query.slot || '') || out.slot || '');
     // Last word of the run: does the day actually look right? A post that went out to the
     // wrong Page reports success, so success alone is not the check.
@@ -2782,6 +2817,30 @@ api.get('/cron/daily-post', async (req, res) => {
     return res.json({ ok: out.ok !== false, ...out });
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
+// ---------- the watchdog ----------
+// The audit existed but only spoke when asked, and a whole day went missing while every run
+// reported success. This is the asking, on a timer, plus one alert per problem per day.
+const watchdogLib = require('./lib/watchdog');
+
+async function watchdog(slot) {
+  return watchdogLib.run({
+    slot,
+    audit: () => dailyAudit(),
+    readState: (key) => db.getSocial(key),
+    writeState: (key, value) => db.putSocial(key, value),
+    alert: (text) => alertOwner(text),
+    describe: (findings) => auditLib.describe(findings)
+  });
+}
+
+api.get('/watchdog', async (req, res) => {
+  if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const out = await watchdog(String(req.query.slot || ''));
+    return res.json({ ...out, summary: out.summary || 'everything lines up' });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
 // ---------- comments ----------
 // Reading the conversation under the posts, and answering it. Pages rarely get comments, so
 // the list is short and numbered; a reply or a delete names the number, not a long id.
@@ -2884,6 +2943,23 @@ async function applyCommentAction(pending) {
   const out = await social.deleteComment(pending.commentId, page.token);
   return { ok: true, id: out.id, page: page.name };
 }
+
+api.post('/admin/story', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const body = req.body || {};
+  const confirm = String(body.confirm || (req.query && req.query.confirm) || '') === '1';
+  const imageUrl = String(body.imageUrl || (req.query && req.query.imageUrl) || '').trim();
+  try {
+    const instagram = require('./lib/instagram');
+    instagram.setToken(await getPageToken());
+    instagram.setIgToken((await db.getSocial('meta_ig_token')) || '');
+    const account = await instagram.resolve(String(body.account || ''));
+    if (!confirm) return res.json({ ok: true, applied: false, would: { account: '@' + account.username, imageUrl: imageUrl.slice(0, 200) } });
+    if (!/^https?:\/\//i.test(imageUrl)) return res.status(400).json({ error: 'imageUrl must be a public URL' });
+    const out = await instagram.publishStory({ account: account.username, imageUrl });
+    return res.json({ ok: true, applied: true, ...out });
+  } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
 
 api.get('/admin/comments', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
