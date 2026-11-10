@@ -2794,6 +2794,7 @@ async function dailyDeps(slot) {
 // extended in place, so the account never lapses and nobody has to renew by hand.
 const META_APP_ID = process.env.META_APP_ID || '1148977434266000';
 api.get('/cron/ig-refresh', async (req, res) => {
+  await noteCron('ig-refresh');
   if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
   const secret = process.env.META_APP_SECRET;
   if (!secret) return res.json({ ok: false, skipped: 'META_APP_SECRET is not set on this deployment' });
@@ -2834,6 +2835,7 @@ async function runPromoPost(opts) {
 
 api.get('/cron/daily-post', async (req, res) => {
   if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
+  await noteCron('daily-post:' + String(req.query.slot || 'auto'));
   const want = String(req.query.status || req.query.dry || '');
   try {
     const deps = await dailyDeps(String(req.query.slot || req.body && req.body.slot || ''));
@@ -2911,6 +2913,7 @@ app.get('/api/admin/providers', async (req, res) => {
   };
   out.gemini.keySet = Boolean(gk);
   out.groq.keySet = Boolean(qk);
+  try { out.cronHits = ((await db.getSocial('cron_hits')) || {}).hits || []; } catch (e) { out.cronHits = []; }
   out.verdict = out.gemini.ok ? 'Gemini answers; Groq is the spare'
     : (out.groq.ok ? 'Gemini is failing, Groq is carrying replies' : 'Neither lane is working, so only commands and small talk will answer');
   return res.json({ ok: true, ...out });
@@ -3097,6 +3100,7 @@ async function watchdog(slot) {
 
 api.get('/watchdog', async (req, res) => {
   if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized' });
+  await noteCron('watchdog:' + String(req.query.slot || 'auto'));
   try {
     const out = await watchdog(String(req.query.slot || ''));
     return res.json({ ...out, summary: out.summary || 'everything lines up' });
@@ -3607,6 +3611,7 @@ api.all('/admin/daily-post', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: String(e && e.message || e).slice(0, 300) }); }
 });
 api.get('/cron/fajr', async (req, res) => {
+  await noteCron('fajr');
   if (!(await cronOk(req))) return res.status(401).json({ error: 'unauthorized: set CRON_SECRET and send it as a Bearer token' });
   const results = await sendFajrBroadcast();
   const ticked = await suite.tick().catch(e => ({ error: String(e).slice(0, 160) }));
@@ -3634,6 +3639,18 @@ function isFounderOrKey(req) {
 }
 // Cron endpoints are reachable without a session, so they answer only for a
 // configured secret, an admin key or a signed-in founder - never by default.
+// A silent cron leaves no trace, so "did it run?" was unanswerable: the watchdog only speaks
+// when something is wrong, and a healthy day looks exactly like a schedule that never fired.
+// Every cron entry stamps its name here, whether or not it ends up saying anything.
+async function noteCron(entry) {
+  try {
+    const cur = (await db.getSocial('cron_hits')) || {};
+    const hits = (Array.isArray(cur.hits) ? cur.hits : []).filter((h) => h && h.at);
+    hits.unshift({ at: new Date().toISOString(), entry: String(entry).slice(0, 40) });
+    await db.putSocial('cron_hits', { hits: hits.slice(0, 60) });
+  } catch (e) { /* bookkeeping must never break a run */ }
+}
+
 async function cronOk(req) {
   const token = process.env.CRON_SECRET || process.env.BROADCAST_TOKEN;
   const auth = req.get('authorization') || '';
