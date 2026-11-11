@@ -24,5 +24,7 @@ ok('the model is told to say yes is needed', /only happen after the owner says y
 ok('it must not claim unconfirmed work', /never claim a commit, a project or a deploy that a tool did not confirm/.test(srv));
 ok('repo names are sanitised', /replace\(\/\[\^a-z0-9\._-\]\+\/g, '-'\)/.test(dev));
 ok('a one-character name is refused', /at least two characters/.test(dev));
+ok('the dashboard chat applies a staged yes', /for EVERY message, not only slash commands/.test(srv) && /if \(lastUser\) \{\s*\n\s*const out = await commands\.handle/.test(srv));
+ok('unrecognised text still reaches the agent', /falls through to the agent untouched/.test(srv));
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
