@@ -1044,6 +1044,15 @@ const DEV_TOOLS = [
         branch: { type: 'string', description: 'Optional branch; the default branch when omitted' }
       }, required: ['repo', 'path', 'content'] } } },
   { type: 'function', function: {
+      name: 'project_scaffold',
+      description: 'Create a brand new GitHub project for the owner and seed it with a working starter app. This creates a repository, so it is staged: read the project name, what it is for, and whether it is private back to the owner and wait for yes. Never say a project exists before they say yes.',
+      parameters: { type: 'object', properties: {
+        name: { type: 'string', description: 'repository name, e.g. zakat-calculator' },
+        description: { type: 'string' },
+        private: { type: 'boolean' },
+        kind: { type: 'string', enum: ['webapp', 'page', 'api'], description: 'starter shape' }
+      }, required: ['name'] } } },
+  { type: 'function', function: {
       name: 'github_repos',
       description: 'The repositories the GitHub token can see, newest activity first, each marked writable or read only. Reading works on all of them; writing only where the allowlist permits.',
       parameters: { type: 'object', properties: { limit: { type: 'number' } } } } },
@@ -1397,11 +1406,36 @@ async function runTool(name, args, ctx) {
       }
       case 'github_write_file': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
-        const d = await devtools.writeFile({
-          repo: args.repo, path: args.path, content: args.content,
-          message: args.message, branch: args.branch
+        // A commit is public and hard to take back, so it waits for a yes like every other
+        // outward action. The diff is summarised, because the owner cannot read 400 lines here.
+        const content = String(args.content == null ? '' : args.content);
+        const lines = content.split('\n').length;
+        await setPendingGithub({
+          kind: 'github_write', repo: String(args.repo || devtools.REPO),
+          path: String(args.path || ''), content, message: String(args.message || ''),
+          branch: args.branch ? String(args.branch) : '',
+          at: new Date().toISOString()
         });
-        return d.action + ' ' + d.path + ' on ' + d.repo + ' (commit ' + d.commit + '). ' + d.url;
+        return 'I will commit ' + String(args.path) + ' to ' + String(args.repo || devtools.REPO) + ' (' + lines + ' lines, ' + Buffer.byteLength(content, 'utf8') + ' bytes).\n'
+          + 'Message: ' + (String(args.message || '').slice(0, 120) || '(none)') + '\n\nReply yes to commit it, or no to drop it.';
+      }
+      case 'project_scaffold': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        try {
+          const name = String(args.name || '').trim();
+          if (name.length < 2) return 'A project needs a name.';
+          const kind = ['webapp', 'page', 'api'].includes(String(args.kind)) ? String(args.kind) : 'webapp';
+          await setPendingGithub({
+            kind: 'project_scaffold', name,
+            description: String(args.description || '').slice(0, 200),
+            private: Boolean(args.private), shape: kind,
+            at: new Date().toISOString()
+          });
+          return 'I will create the GitHub project *' + name + '* (' + kind + ', ' + (args.private ? 'private' : 'public') + ')'
+            + (args.description ? ' for: ' + String(args.description).slice(0, 160) : '')
+            + ', seeded with a working starter: index.html, styles, app.js, manifest, service worker and README.\n\n'
+            + 'Reply yes to create it, or no to drop it.';
+        } catch (e) { return 'Could not stage that: ' + String(e.message || e).slice(0, 200); }
       }
       case 'github_stage_issue': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
@@ -1893,7 +1927,7 @@ async function groqAsk(agent, history, ctx) {
     ? '\n\nWHO YOU ARE TALKING TO: this is the owner of this workspace' + (ctx.ownerName ? ', ' + String(ctx.ownerName).split(' ')[0] : '') + '. Speak to him as the owner, not as a customer: do not introduce yourself, do not ask his name, and never treat him as a first-time visitor. He can ask for posts, deploys, settings and reports; do them when he asks.'
     : '';
   const hasDevTools = allTools.some(t => t && t.function && /^github_|^render_/.test(t.function.name));
-  const DEV_RULE = '\n\nCODE AND DEPLOY ACCESS: you can read the repository, the commit log, the deploy status and production logs, but you cannot commit, push, deploy, edit a file or restart anything. Never say you deployed, pushed, fixed or restarted something. When a fix is needed, describe the exact change (file, function, before and after) and let the owner apply it. Diagnose from evidence: read the file or the log line before naming a cause.';
+  const DEV_RULE = '\n\nCODE AND DEPLOY ACCESS: you can read any repository, the commit log, the deploy status and production logs, and you can build: project_scaffold creates a new repository with a working starter, github_write_file commits a file. Both are staged and only happen after the owner says yes in this chat, so describe the change plainly first, then let them answer. You cannot deploy, restart a service or change build settings: when a deploy is needed, say exactly what to deploy and let the owner do it. Diagnose from evidence: read the file or the log line before naming a cause, and never claim a commit, a project or a deploy that a tool did not confirm.';
   const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') + OWNER_RULE + (hasIlmTools ? REFERENCE_RULE : '') + (hasWebTools ? WEB_RULE : '') + (hasDevTools ? DEV_RULE : '') + (hasEmailTools ? EMAIL_RULE : '') }, ...history];
   const ilmKey = await getIlmKey();
   // A greeting cannot need a lookup, and the schemas cost tokens on every round.
@@ -4236,6 +4270,57 @@ async function setPendingSettings(a) { await db.putSocial(PENDING_SETTINGS_KEY, 
 async function clearPendingSettings() { await db.putSocial(PENDING_SETTINGS_KEY, 'null'); }
 
 const PENDING_GITHUB_KEY = 'pending_github_action';
+
+// The starter a new project begins with: small, but every file works, so the owner sees a
+// live page after the first deploy instead of a folder of placeholders.
+function starterFiles(name, description, shape) {
+  const title = String(name || 'New project').replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const about = String(description || 'Built with AgentX.').slice(0, 200);
+  const readme = '# ' + title + '\n\n' + about + '\n\nCreated by AgentX. Edit any file through the AgentX chat: say what should change and approve the commit.\n';
+  if (shape === 'api') {
+    return {
+      'README.md': readme,
+      'vercel.json': JSON.stringify({ rewrites: [{ source: '/(.*)', destination: '/api' }] }, null, 2) + '\n',
+      'api/index.js': "module.exports = (req, res) => {\n  res.setHeader('content-type', 'application/json');\n  res.status(200).json({ ok: true, project: '" + String(name) + "', at: new Date().toISOString() });\n};\n",
+      'package.json': JSON.stringify({ name: String(name).toLowerCase().replace(/[^a-z0-9-]+/g, '-'), version: '0.1.0', private: true }, null, 2) + '\n'
+    };
+  }
+  const html = [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    '  <meta charset="utf-8">',
+    '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+    '  <title>' + title + '</title>',
+    '  <meta name="description" content="' + about.replace(/"/g, '&quot;') + '">',
+    '  <link rel="manifest" href="manifest.webmanifest">',
+    '  <link rel="stylesheet" href="styles.css">',
+    '</head>',
+    '<body>',
+    '  <main>',
+    '    <h1>' + title + '</h1>',
+    '    <p>' + about + '</p>',
+    '    <button id="go">Try it</button>',
+    '    <p id="out"></p>',
+    '  </main>',
+    '  <script src="app.js"></script>',
+    '</body>',
+    '</html>',
+    ''
+  ].join('\n');
+  const files = {
+    'README.md': readme,
+    'index.html': html,
+    'styles.css': ':root { color-scheme: dark }\nbody { margin: 0; font-family: system-ui, sans-serif; background: #0b1220; color: #e6edf7 }\nmain { max-width: 640px; margin: 12vh auto; padding: 24px }\nh1 { font-size: 28px; margin: 0 0 8px }\np { opacity: .85; line-height: 1.6 }\nbutton { font: inherit; padding: 12px 20px; border: 0; border-radius: 10px; background: #2563eb; color: #fff; cursor: pointer }\n',
+    'app.js': "document.getElementById('go').addEventListener('click', () => {\n  document.getElementById('out').textContent = 'It works. This is ' + document.title + '.';\n});\n"
+  };
+  if (shape === 'webapp') {
+    files['manifest.webmanifest'] = JSON.stringify({ name: title, short_name: String(name).slice(0, 12), start_url: '/', display: 'standalone', background_color: '#0b1220', theme_color: '#0b1220' }, null, 2) + '\n';
+    files['sw.js'] = "const CACHE = 'app-v1';\nself.addEventListener('install', (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/', 'styles.css', 'app.js']))));\nself.addEventListener('fetch', (e) => {\n  if (e.request.method !== 'GET') return;\n  e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request)));\n});\n";
+  }
+  return files;
+}
+
 async function getPendingGithub() {
   try { return JSON.parse((await db.getSocial(PENDING_GITHUB_KEY)) || 'null'); } catch (e) { return null; }
 }
@@ -4345,6 +4430,19 @@ async function postActionFromChat(verb, arg) {
       }
       try {
         const devtools = require('./lib/devtools');
+        if (gh.kind === 'github_write') {
+          const w = await devtools.writeFile({ repo: gh.repo, path: gh.path, content: gh.content, message: gh.message, branch: gh.branch });
+          await clearPendingGithub();
+          return w.action + ' ' + w.path + ' on ' + w.repo + ' (commit ' + w.commit + ').\n' + w.url;
+        }
+        if (gh.kind === 'project_scaffold') {
+          const made = await devtools.createRepo({ name: gh.name, description: gh.description, private: gh.private });
+          const files = starterFiles(gh.name, gh.description, gh.shape);
+          await devtools.seedFiles({ repo: made.repo, files, message: 'Start ' + gh.name });
+          await clearPendingGithub();
+          return 'Created ' + made.repo + ' with ' + Object.keys(files).length + ' files.\n' + made.url
+            + '\n\nNext: tell me what it should do, and I will write the first real version into it.';
+        }
         const done = gh.kind === 'github_issue'
           ? await devtools.openIssue({ repo: gh.repo, title: gh.title, body: gh.body, labels: gh.labels })
           : await devtools.openPull({ repo: gh.repo, title: gh.title, head: gh.head, base: gh.base, body: gh.body, draft: gh.draft });
