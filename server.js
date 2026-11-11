@@ -2975,6 +2975,17 @@ app.all('/api/admin/instagram', async (req, res) => {
 // Which Instagram accounts are actually wired to the never-expiring system user, and how long
 // the token that currently publishes them has left. The two answers decide whether Instagram
 // survives a missed refresh, so they are asked in one place instead of guessed.
+// These admin routes were registered on app() rather than the api router, so the session
+// middleware never ran for them: req.user stayed undefined and a signed-in founder was told
+// "founder or admin key required". Attach the session here, before the first of them.
+app.use('/api/admin', async (req, res, next) => {
+  try {
+    const [, sess] = await loadSession(req);
+    if (sess && new Date(sess.expires) >= new Date()) req.user = sess.user;
+  } catch (e) { /* an unreadable session is simply not a founder */ }
+  next();
+});
+
 app.get('/api/admin/ig-status', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
   const G = 'https://graph.facebook.com/v21.0';

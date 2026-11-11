@@ -28,5 +28,7 @@ ok('the dashboard chat applies a staged yes', /for EVERY message, not only slash
 ok('unrecognised text still reaches the agent', /falls through to the agent untouched/.test(srv));
 ok('a GET request carries no body', /const withBody = !\/\^\(GET\|HEAD\)\$\/i\.test/.test(fs.readFileSync(__dirname + '/lib/devtools.js', 'utf8')));
 ok('a write still sends its payload', /\.\.\.\(withBody \? \{ body: JSON\.stringify\(payload \|\| \{\}\) \} : \{\}\)/.test(fs.readFileSync(__dirname + '/lib/devtools.js', 'utf8')));
+const srvTxt = fs.readFileSync(__dirname + '/server.js', 'utf8');
+ok('admin routes attach the session before they run', srvTxt.indexOf("app.use('/api/admin'") > 0 && srvTxt.indexOf("app.use('/api/admin'") < srvTxt.indexOf("app.get('/api/admin"));
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
