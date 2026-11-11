@@ -26,5 +26,7 @@ ok('repo names are sanitised', /replace\(\/\[\^a-z0-9\._-\]\+\/g, '-'\)/.test(de
 ok('a one-character name is refused', /at least two characters/.test(dev));
 ok('the dashboard chat applies a staged yes', /for EVERY message, not only slash commands/.test(srv) && /if \(lastUser\) \{\s*\n\s*const out = await commands\.handle/.test(srv));
 ok('unrecognised text still reaches the agent', /falls through to the agent untouched/.test(srv));
+ok('a GET request carries no body', /const withBody = !\/\^\(GET\|HEAD\)\$\/i\.test/.test(fs.readFileSync(__dirname + '/lib/devtools.js', 'utf8')));
+ok('a write still sends its payload', /\.\.\.\(withBody \? \{ body: JSON\.stringify\(payload \|\| \{\}\) \} : \{\}\)/.test(fs.readFileSync(__dirname + '/lib/devtools.js', 'utf8')));
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
