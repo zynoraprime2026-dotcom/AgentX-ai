@@ -89,7 +89,7 @@ const api = express.Router();
 const crypto = require('crypto');
 
 
-const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/auth/link', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh', '/watchdog', '/learn-review', '/reason'];
+const PUBLIC_API = ['/status', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/auth/recover', '/auth/link', '/auth/link/go', '/telegram/status', '/cron/fajr', '/cron/tick', '/cron/daily-post', '/cron/ig-refresh', '/watchdog', '/learn-review', '/reason'];
 // admin routes pass the middleware (key-checked inside) so the platform owner can manage users without a session
 
 const keepAlive = { on: false, url: '', everyMinutes: 10 };
@@ -210,13 +210,21 @@ api.get('/auth/link', async (req, res) => {
     if (new Date(rec.expires).getTime() < Date.now()) {
       return res.status(400).type('html').send(linkPage('Link expired', 'That link has expired. Ask for a fresh one.', ''));
     }
+    // A chat app fetches the link to build a preview; a person opens it in a browser. Only
+    // the second one gets signed in, so the preview cannot spend the owner's link.
+    const ua = String(req.headers['user-agent'] || '');
+    const crawler = /whatsapp|facebookexternalhit|telegrambot|slackbot|twitterbot|linkedinbot|discordbot|googlebot|bingbot|curl\/|wget|python-requests|headless/i.test(ua);
+    if (!crawler) return res.redirect(307, '/api/auth/link?t=' + encodeURIComponent(t) + '&go=1');
     return res.type('html').send(linkPage('Sign in', 'Tap the button to sign in. This link works once and expires in fifteen minutes.', t));
   } catch (e) {
     return res.status(500).type('html').send(linkPage('Something went wrong', String((e && e.message) || e).slice(0, 120), ''));
   }
 });
 
-api.post('/auth/link', async (req, res) => {
+api.post('/auth/link', async (req, res) => { await completeLoginLink(req, res); });
+api.get('/auth/link/go', async (req, res) => { await completeLoginLink(req, res); });
+
+async function completeLoginLink(req, res) {
   try {
     const raw = await db.getSocial('login_link').catch(() => '');
     if (!raw) return res.status(400).send('That link was already used or never existed.');
@@ -236,7 +244,7 @@ api.post('/auth/link', async (req, res) => {
     res.setHeader('Set-Cookie', 'agx_sess=' + token + '; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax');
     return res.redirect('/');
   } catch (e) { return res.status(500).send('Could not sign in: ' + String((e && e.message) || e).slice(0, 120)); }
-});
+}
 
 api.post('/auth/recover', rateLimit(10, 3600e3), async (req, res) => {
   // A founder key is fixed in length, so a short one is a bad paste, not a wrong secret: say

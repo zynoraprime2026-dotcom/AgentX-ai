@@ -13,7 +13,11 @@ ok('the token is random, not derived from the email', /crypto\.randomBytes\(24\)
 ok('the token expires in fifteen minutes', /15 \* 60000/.test(mint));
 ok('the link is returned as a path, not a bare token', /'\/api\/auth\/link\?t=' \+ token/.test(mint));
 ok('using the link compares the token', /rec\.token !== String\(req\.query\.t \|\| ''\)/.test(use));
-ok('the GET burns nothing, it only renders a button', /The GET renders a button and burns nothing/.test(srv));
+ok('a chat preview crawler is detected by its user agent', /whatsapp\|facebookexternalhit\|telegrambot/.test(srv));
+ok('a crawler gets a button page, not a session', /if \(!crawler\) return res\.redirect\(307/.test(srv));
+ok('a real browser tap signs in on the spot', /return res\.redirect\(307, '\/api\/auth\/link\?t='/.test(srv));
+ok('the sign-in path is shared by the button and the tap', /async function completeLoginLink/.test(srv) && /api\.get\('\/auth\/link\/go'/.test(srv));
+ok('the tap path needs no session', /'\/auth\/link\/go'/.test(srv));
 ok('a chat preview crawler cannot consume the token', /api\.get\('\/auth\/link'[\s\S]{0,1400}?return res\.type\('html'\)\.send\(linkPage\('Sign in'/.test(srv));
 const getOnly = srv.slice(srv.indexOf("api.get('/auth/link'"), srv.indexOf("api.post('/auth/link'"));
 ok('the GET never writes to the login_link record', !/putSocial\('login_link'/.test(getOnly));
