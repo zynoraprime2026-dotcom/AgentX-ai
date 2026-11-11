@@ -1955,8 +1955,16 @@ async function groqAsk(agent, history, ctx) {
   // One budget for the whole reply: a per-round allowance still let a tool round pay
   // a fresh 12s, which is how a single answer reached twenty seconds.
   let waited = 0;
+  // Vercel kills the function at sixty seconds, and a killed function answers the browser
+  // with nothing. The reply carries its own deadline instead: when it is close, drop the
+  // tools and let the model answer with what it already has.
+  const REPLY_DEADLINE = Date.now() + (Number(process.env.REPLY_BUDGET_MS) || 40000);
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const lastRound = round === MAX_ROUNDS - 1;
+    if (round > 0 && Date.now() > REPLY_DEADLINE && toolsOn) {
+      toolsOn = false;
+      messages.push({ role: 'system', content: 'Time is nearly up. Answer now in plain words with what you already know or have already looked up. Do not call another tool.' });
+    }
     let out = null;
     for (let attempt = 0; attempt < 4; attempt++) {
       out = await providers.chat({
