@@ -98,6 +98,7 @@ const views = {
   conversations: renderConversations,
   reminders: loadReminders, triggers: loadTriggers, channels: () => renderHealth(),
   connectors: renderConnectors,
+  today: loadToday, documents: loadDocuments,
   pagesview: renderPages,
   billing: loadBilling, settings: loadHealth
 };
@@ -1398,3 +1399,110 @@ try {
 } catch (e) {}
 
 })();
+
+// ---------- today ----------
+// One screen of facts the server already knows. Nothing here is generated, so the numbers
+// can be trusted in a way a model's summary cannot.
+async function loadToday() {
+  const box = $('#todayText');
+  if (box) box.textContent = 'Loading…';
+  try {
+    const d = await api('/office');
+    if (box) box.textContent = d.text || 'Nothing to report.';
+    const docs = (d.documents || []);
+    const el = $('#todayDocs');
+    if (el) {
+      el.innerHTML = docs.length
+        ? docs.map((x) => `<div class="docrow" data-doc="${esc(x.id)}"><strong>${esc(x.title)}</strong> <span class="muted">${esc(x.kind)} · ${esc(String(x.updatedAt || '').slice(0, 10))}</span></div>`).join('')
+        : 'No documents yet.';
+    }
+  } catch (e) {
+    if (box) box.textContent = 'Could not read today: ' + e.message;
+  }
+}
+
+// ---------- documents ----------
+let docCurrent = null;
+
+async function loadDocuments() {
+  const el = $('#docList');
+  if (el) el.textContent = 'Loading…';
+  try {
+    const d = await api('/documents');
+    const rows = d.documents || [];
+    if ($('#docCount')) $('#docCount').textContent = rows.length + ' saved';
+    if (!el) return;
+    el.innerHTML = rows.length
+      ? rows.map((x) => `<div class="docrow" data-doc="${esc(x.id)}">
+          <strong>${esc(x.title)}</strong>
+          <span class="muted">${esc(x.kind)} · ${Number(x.chars) || 0} chars · ${esc(String(x.updatedAt || '').slice(0, 16).replace('T', ' '))}</span>
+          <button class="btn ghost small" data-docdel="${esc(x.id)}" title="Delete this document">✕</button>
+        </div>`).join('')
+      : 'Nothing saved yet. Write one above, or ask an agent in the chat.';
+  } catch (e) {
+    if (el) el.textContent = 'Could not load documents: ' + e.message;
+  }
+}
+
+async function openDocument(id) {
+  try {
+    const d = await api('/documents/' + encodeURIComponent(id));
+    const doc = d.document || {};
+    docCurrent = doc;
+    $('#docReaderCard') && $('#docReaderCard').classList.remove('hidden');
+    if ($('#docReaderTitle')) $('#docReaderTitle').textContent = doc.title || 'Document';
+    if ($('#docReaderBody')) $('#docReaderBody').textContent = doc.body || '';
+    if ($('#docTitle')) $('#docTitle').value = doc.title || '';
+    if ($('#docBody')) $('#docBody').value = doc.body || '';
+    if ($('#docKind') && doc.kind) $('#docKind').value = doc.kind;
+    if ($('#docReaderSources')) {
+      const src = doc.sources || [];
+      $('#docReaderSources').innerHTML = src.length
+        ? 'Sources:<br>' + src.map((x) => `· ${esc(x.title || x.url)} — <a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url)}</a>`).join('<br>')
+        : '';
+    }
+  } catch (e) { toast(e.message); }
+}
+
+document.addEventListener('click', async (e) => {
+  const del = e.target.closest('[data-docdel]');
+  if (del) {
+    e.stopPropagation();
+    if (!confirm('Delete this document? It cannot be undone.')) return;
+    try {
+      await api('/documents', { method: 'POST', body: { action: 'delete', id: del.dataset.docdel } });
+      toast('Deleted');
+      if (docCurrent && docCurrent.id === del.dataset.docdel) { docCurrent = null; $('#docReaderCard') && $('#docReaderCard').classList.add('hidden'); }
+      loadDocuments();
+    } catch (err) { toast(err.message); }
+    return;
+  }
+  const row = e.target.closest('[data-doc]');
+  if (row) { openDocument(row.dataset.doc); return; }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  if ($('#todayRefresh')) $('#todayRefresh').onclick = loadToday;
+  if ($('#docClose')) $('#docClose').onclick = () => { docCurrent = null; $('#docReaderCard').classList.add('hidden'); };
+  if ($('#docNew')) $('#docNew').onclick = () => {
+    docCurrent = null;
+    $('#docReaderCard').classList.add('hidden');
+    if ($('#docTitle')) $('#docTitle').value = '';
+    if ($('#docBody')) $('#docBody').value = '';
+  };
+  if ($('#docSave')) $('#docSave').onclick = async () => {
+    const title = ($('#docTitle') && $('#docTitle').value || '').trim();
+    const body = ($('#docBody') && $('#docBody').value || '');
+    if (!title) return toast('A title is needed');
+    try {
+      const d = await api('/documents', { method: 'POST', body: {
+        id: docCurrent ? docCurrent.id : undefined,
+        title, body,
+        kind: $('#docKind') ? $('#docKind').value : 'document'
+      } });
+      docCurrent = { id: d.id, title: d.title, kind: d.kind, body };
+      toast('Saved (version ' + d.version + ')');
+      loadDocuments();
+    } catch (e) { toast(e.message); }
+  };
+});

@@ -270,3 +270,11 @@ input[type=range] { padding: 0; accent-color: var(--accent); }
 .grid2 label { font-size: 12px; }
 .grid2 .input { margin-top: 4px; }
 @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+
+/* Documents and Today: rows read like a list of files, not like cards. */
+.docrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.06); cursor: pointer; }
+.docrow:last-child { border-bottom: 0; }
+.docrow strong { flex: 0 0 auto; }
+.docrow .muted { flex: 1 1 auto; font-size: 13px; }
+.docrow button.btn.ghost.small { flex: 0 0 auto; }
+.row-between { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
