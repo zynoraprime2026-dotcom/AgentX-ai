@@ -183,7 +183,40 @@ api.post('/admin/login-link', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 200) }); }
 });
 
+// A one-time sign-in link. The GET renders a button and burns nothing, because a link sent
+// through a chat app is fetched by its preview crawler the moment it is sent - that fetch used
+// to consume the token before the owner ever tapped it. Only the button's POST signs in.
+function linkPage(title, detail, token) {
+  const button = token
+    ? '<form method="POST" action="/api/auth/link?t=' + token + '"><button type="submit" style="font:inherit;font-size:16px;padding:14px 26px;border:0;border-radius:10px;background:#2563eb;color:#fff;cursor:pointer">Sign in to AgentX</button></form>'
+    : '';
+  return '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + title + '</title>'
+    + '<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1220;color:#e6edf7;font-family:system-ui,sans-serif">'
+    + '<div style="max-width:380px;padding:28px;text-align:center">'
+    + '<div style="font-size:22px;font-weight:700;margin-bottom:6px">Agent<span style="color:#3b82f6">X</span></div>'
+    + '<p style="opacity:.8;line-height:1.5;margin:0 0 18px">' + detail + '</p>'
+    + button + '</div></body>';
+}
+
 api.get('/auth/link', async (req, res) => {
+  try {
+    const raw = await db.getSocial('login_link').catch(() => '');
+    let rec = null;
+    try { rec = raw ? JSON.parse(String(raw)) : null; } catch (e) { rec = null; }
+    const t = String(req.query.t || '');
+    if (!rec || !rec.token || rec.token !== t) {
+      return res.status(400).type('html').send(linkPage('Link not valid', 'That link was already used or never existed. Ask for a fresh one.', ''));
+    }
+    if (new Date(rec.expires).getTime() < Date.now()) {
+      return res.status(400).type('html').send(linkPage('Link expired', 'That link has expired. Ask for a fresh one.', ''));
+    }
+    return res.type('html').send(linkPage('Sign in', 'Tap the button to sign in. This link works once and expires in fifteen minutes.', t));
+  } catch (e) {
+    return res.status(500).type('html').send(linkPage('Something went wrong', String((e && e.message) || e).slice(0, 120), ''));
+  }
+});
+
+api.post('/auth/link', async (req, res) => {
   try {
     const raw = await db.getSocial('login_link').catch(() => '');
     if (!raw) return res.status(400).send('That link was already used or never existed.');

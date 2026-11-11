@@ -13,6 +13,11 @@ ok('the token is random, not derived from the email', /crypto\.randomBytes\(24\)
 ok('the token expires in fifteen minutes', /15 \* 60000/.test(mint));
 ok('the link is returned as a path, not a bare token', /'\/api\/auth\/link\?t=' \+ token/.test(mint));
 ok('using the link compares the token', /rec\.token !== String\(req\.query\.t \|\| ''\)/.test(use));
+ok('the GET burns nothing, it only renders a button', /The GET renders a button and burns nothing/.test(srv));
+ok('a chat preview crawler cannot consume the token', /api\.get\('\/auth\/link'[\s\S]{0,1400}?return res\.type\('html'\)\.send\(linkPage\('Sign in'/.test(srv));
+ok('the GET never writes to the login_link record', !/api\.get\('\/auth\/link'[\s\S]{0,1500}?putSocial\('login_link', ''\)/.test(srv));
+ok('signing in happens on a POST the crawler will not send', /api\.post\('\/auth\/link'[\s\S]{0,1600}?Set-Cookie/.test(srv));
+ok('the button posts to the same token', /method="POST" action="\/api\/auth\/link\?t=' \+ token/.test(srv));
 ok('an expired link is refused', /That link has expired/.test(use));
 ok('the token is burnt after one use', /login_link', ''\)/.test(use));
 ok('a valid link sets a normal session cookie', /Set-Cookie[\s\S]{0,120}agx_sess/.test(use));
