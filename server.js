@@ -2282,7 +2282,10 @@ api.post('/chat/:id', rateLimitUser(20, 60e3, 'chat'), async (req, res) => {
   const lastUser = [...history].reverse().find(m => m.role === 'user');
   const started = Date.now();
   const base = { ownerId: req.user.id, agentId: a.id, agentName: a.name, channel: 'web' };
-  if (lastUser && /^\//.test(String(lastUser.content || '').trim())) {
+  // The command layer runs before the model for EVERY message, not only slash commands:
+  // a bare yes has to apply what was staged, and post has to publish, from the dashboard too.
+  // Unrecognised text returns null and falls through to the agent untouched.
+  if (lastUser) {
     const out = await commands.handle(lastUser.content, { ownerId: req.user.id, channel: 'web', key: 'user:' + req.user.id, canManage: Boolean(req.user.founder) });
     if (out) {
       suite.logEvent({ ...base, kind: 'message', query: String(lastUser.content).slice(0, 300) });
