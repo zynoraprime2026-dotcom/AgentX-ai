@@ -55,9 +55,13 @@ const r = require('./lib/research');
   ok('it saves what it finds', /workspace\.research\(\{ ownerId: ctx\.ownerId, question: out\.question/.test(srv));
   ok('it warns when nothing was traceable', /could not trace a citation/.test(srv));
   ok('it has an endpoint of its own', /api\.post\('\/research'/.test(srv));
+  ok('reference lanes are asked before news', /\[web\.wikipedia, web\.duckduckgo, web\.news\]/.test(srv));
+  ok('opaque news redirects are not counted as sources', /news\.google\.com\/rss\/articles/.test(srv));
+  ok('excerpts are used when no page opens, and labelled', /comes from search excerpts, not opened pages/.test(require('fs').readFileSync(__dirname + '/lib/research.js', 'utf8')));
+  ok('an excerpt brief is never verified', /snippetOnly: true/.test(require('fs').readFileSync(__dirname + '/lib/research.js', 'utf8')));
   ok('research asks the search lanes for result objects', /async function researchSearch/.test(srv) && /web\.duckduckgo, web\.news, web\.wikipedia/.test(srv));
   ok('both call sites use it', (srv.match(/search: \(q\) => researchSearch\(q\)/g) || []).length === 2, (srv.match(/researchSearch\(q\)/g) || []).length);
-  ok('a blocked lane does not end the search', /for \(const lane of \[web\.duckduckgo, web\.news, web\.wikipedia\]\)/.test(srv));
+  ok('a blocked lane does not end the search', /for \(const lane of \[web\.wikipedia, web\.duckduckgo, web\.news\]\)/.test(srv));
   ok('the endpoint is founder only', /api\.post\('\/research'[\s\S]{0,160}req\.user\.founder/.test(srv));
 
   ok('art generation is a tool', /name: 'art_generate'/.test(srv));

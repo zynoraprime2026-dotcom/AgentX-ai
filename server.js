@@ -2059,13 +2059,24 @@ const research = require('./lib/research');
 // Research needs result objects, not the rendered text the chat tool replies with, so it asks
 // the search lanes directly and moves on when one is blocked.
 async function researchSearch(q) {
-  for (const lane of [web.duckduckgo, web.news, web.wikipedia]) {
+  // Reference first, then the open web, then news. Google News hands back opaque
+  // news.google.com/rss/articles links that no reader can open, so those are dropped
+  // rather than counted as sources that "failed to load".
+  const rows = [];
+  for (const lane of [web.wikipedia, web.duckduckgo, web.news]) {
     try {
-      const rows = await lane(q);
-      if (Array.isArray(rows) && rows.length) return rows;
+      const got = await lane(q);
+      if (Array.isArray(got)) {
+        for (const r of got) {
+          const u = String((r && (r.url || r.link)) || '');
+          if (/news\.google\.com\/rss\/articles/i.test(u)) continue;
+          rows.push(r);
+        }
+      }
     } catch (e) { /* the next lane gets a turn */ }
+    if (rows.length >= 8) break;
   }
-  return [];
+  return rows;
 }
 
 // Art direction in one place: a style, a shape, and the rule that a dawah picture carries no
