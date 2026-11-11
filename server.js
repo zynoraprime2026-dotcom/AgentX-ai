@@ -1142,6 +1142,22 @@ const WORK_TOOLS = [
         sources: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' } } } }
       }, required: ['question', 'findings'] } } },
   { type: 'function', function: {
+      name: 'deep_research',
+      description: 'Research a question properly and save the result. It runs several searches, opens the pages, writes a brief that cites only those pages, and stores it in the workspace with its sources. Use it for questions that need evidence rather than recall: comparisons, current facts, anything the owner will act on. Slower than answering directly, so do not use it for small talk or for what the Ilm APIs already answer.',
+      parameters: { type: 'object', properties: {
+        question: { type: 'string' },
+        depth: { type: 'number', description: '1 quick, 2 standard, 3 thorough' }
+      }, required: ['question'] } } },
+  { type: 'function', function: {
+      name: 'art_generate',
+      description: 'Create an artwork or image from a description and keep it in the workspace. Choose a style: photo, cinematic, oil, watercolour, minimal, poster, geometric, calligraphy. For dawah or Islamic pages, say noPeople true so the picture has no human figure.',
+      parameters: { type: 'object', properties: {
+        subject: { type: 'string', description: 'what the picture shows' },
+        style: { type: 'string', enum: ['photo', 'cinematic', 'oil', 'watercolour', 'minimal', 'poster', 'geometric', 'calligraphy'] },
+        purpose: { type: 'string', description: 'what it is for, e.g. a page post, a cover, a gift' },
+        noPeople: { type: 'boolean' }
+      }, required: ['subject'] } } },
+  { type: 'function', function: {
       name: 'office_today',
       description: 'The one-screen answer to "what does today look like?": open and due reminders, unread email count, what has been posted today, anything waiting for a yes, and the most recent documents. Read-only.',
       parameters: { type: 'object', properties: {} } } },
@@ -1476,6 +1492,45 @@ async function runTool(name, args, ctx) {
         if (!ctx) return 'No chat context available.';
         const d = await workspace.research({ ownerId: ctx.ownerId, question: args.question, findings: args.findings, sources: args.sources });
         return 'Saved as a research document: "' + d.title + '" with ' + d.sources.length + ' source' + (d.sources.length === 1 ? '' : 's') + ' (id ' + d.id + ').';
+      }
+      case 'deep_research': {
+        if (!ctx) return 'No chat context available.';
+        const depth = Math.min(Math.max(Number(args.depth) || 2, 1), 3);
+        const out = await research.run({
+          question: args.question,
+          maxQueries: depth + 1,
+          maxPages: depth + 1,
+          search: async (q) => {
+            const r = await web.webSearch(q, { limit: 5 });
+            return (r && (r.results || r)) || [];
+          },
+          readPage: async (url) => web.readPage(url),
+          ask: async (prompt) => {
+            const said = await providers.chat({
+              key: (await db.getSettings()).groqApiKey && String((await db.getSettings()).groqApiKey).startsWith('gsk_')
+                ? (await db.getSettings()).groqApiKey : process.env.GROQ_API_KEY,
+              model: 'openai/gpt-oss-120b',
+              messages: [{ role: 'system', content: 'You write research briefs from supplied source text only.' }, { role: 'user', content: prompt }],
+              maxTokens: 900, temperature: 0.3,
+              timeoutMs: 22000
+            });
+            return said && said.ok ? said.text : '';
+          }
+        });
+        const doc = await workspace.research({ ownerId: ctx.ownerId, question: out.question, findings: out.brief, sources: out.sources });
+        return (out.verified ? '' : 'Careful: I found pages but could not trace a citation.\n\n')
+          + out.brief.slice(0, 2600)
+          + '\n\nSaved as "' + doc.title + '" with ' + doc.sources.length + ' source(s).';
+      }
+      case 'art_generate': {
+        if (!ctx) return 'No chat context available.';
+        const shot = artPrompt(args);
+        const raw = await studioCall('/v1/image/generate', { prompt: shot.prompt, width: shot.width, height: shot.height, ...(shot.preset ? { preset: shot.preset } : {}) });
+        let url = '';
+        try { const j = typeof raw === 'string' ? JSON.parse(raw) : raw; url = j.url || j.image_url || (j.data && j.data.url) || ''; } catch (e) { url = ''; }
+        if (!url) return 'The image service answered but returned no picture. Try again, or describe it differently.';
+        const doc = await workspace.save({ ownerId: ctx.ownerId, kind: 'artwork', title: (args.subject || 'Artwork').slice(0, 90), body: url + '\n\n' + shot.prompt, tags: ['art', shot.style] });
+        return 'Here it is. Saved in Documents as "' + doc.title + '".\n' + url;
       }
       case 'office_today': {
         if (!ctx) return 'No chat context available.';
@@ -2000,6 +2055,37 @@ async function ownerDisplayName() {
 }
 
 const workspace = require('./lib/workspace');
+const research = require('./lib/research');
+
+
+// Art direction in one place: a style, a shape, and the rule that a dawah picture carries no
+// human figure. The model describes the picture; this decides how it is asked for.
+const ART_STYLES = {
+  photo: 'professional photograph, natural light, fine detail, shallow depth of field',
+  cinematic: 'cinematic still, dramatic lighting, wide composition, film grain',
+  oil: 'oil painting, visible brushwork, rich colour, canvas texture',
+  watercolour: 'watercolour, soft washes, paper texture, gentle edges',
+  minimal: 'minimal composition, generous negative space, two-colour palette',
+  poster: 'bold poster design, strong shapes, print-ready contrast, no lettering',
+  geometric: 'islamic geometric pattern, precise tessellation, balanced symmetry',
+  calligraphy: 'flowing arabic calligraphy forms treated abstractly, ornamental border'
+};
+function artPrompt(args) {
+  const style = ART_STYLES[String(args.style)] ? String(args.style) : 'photo';
+  const noPeople = args.noPeople !== false;
+  const parts = [
+    String(args.subject || '').slice(0, 300),
+    ART_STYLES[style],
+    'no text, no lettering, no watermark, no signature',
+    noPeople ? 'no people, no faces, no silhouettes, no human figures' : ''
+  ].filter(Boolean);
+  return {
+    style,
+    prompt: parts.join(', ') + (args.purpose ? ', intended for ' + String(args.purpose).slice(0, 60) : ''),
+    width: 1024,
+    height: style === 'poster' ? 1280 : 1024
+  };
+}
 
 async function groqAsk(agent, history, ctx) {
   const st = await db.getSettings();
@@ -4118,6 +4204,36 @@ api.post('/quick', async (req, res) => {
       return res.json({ ok: true, message: (last.slots[slot] ? 'The ' + slot + ' slot is already posted for ' + last.date + '.' : 'The ' + slot + ' slot is open for ' + last.date + '.') });
     }
     return res.status(400).json({ error: 'unknown action' });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
+// Deep research as an endpoint, so it can run for as long as the platform allows instead of
+// inside a chat turn, and so the dashboard can offer it without a conversation.
+api.post('/research', async (req, res) => {
+  if (!(req.user && req.user.founder)) return res.status(403).json({ error: 'founder only' });
+  const question = String((req.body && req.body.question) || '').trim();
+  if (question.length < 3) return res.status(400).json({ error: 'a research question needs a few words' });
+  const depth = Math.min(Math.max(Number((req.body && req.body.depth) || 2), 1), 3);
+  try {
+    const st = await db.getSettings();
+    const key = (st.groqApiKey && String(st.groqApiKey).startsWith('gsk_')) ? st.groqApiKey : process.env.GROQ_API_KEY;
+    const out = await research.run({
+      question,
+      maxQueries: depth + 1,
+      maxPages: depth + 1,
+      search: async (q) => { const r = await web.webSearch(q, { limit: 5 }); return (r && (r.results || r)) || []; },
+      readPage: async (url) => web.readPage(url),
+      ask: async (prompt) => {
+        const said = await providers.chat({
+          key, model: 'openai/gpt-oss-120b',
+          messages: [{ role: 'system', content: 'You write research briefs from supplied source text only.' }, { role: 'user', content: prompt }],
+          maxTokens: 900, temperature: 0.3, timeoutMs: 22000
+        });
+        return said && said.ok ? said.text : '';
+      }
+    });
+    const doc = await workspace.research({ ownerId: req.user.id, question: out.question, findings: out.brief, sources: out.sources });
+    return res.json({ ok: true, verified: out.verified, pagesRead: out.pagesRead, document: { id: doc.id, title: doc.title }, brief: out.brief, sources: doc.sources });
   } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
 });
 
