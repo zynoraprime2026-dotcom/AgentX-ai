@@ -4089,6 +4089,38 @@ api.all('/admin/hadith-post', async (req, res) => {
 // a question only Facebook could answer.
 // Documents as an HTTP surface, so the dashboard and any script see the same workspace the
 // chat writes into. Every route is scoped to the signed-in user: a document is private.
+// Quick actions for the Today screen: the two things the owner actually does every day, each
+// one a real call into the same code the chat uses, so nothing is duplicated or simulated.
+api.post('/quick', async (req, res) => {
+  if (!(req.user && req.user.founder)) return res.status(403).json({ error: 'founder only' });
+  const action = String((req.body && req.body.action) || '');
+  try {
+    if (action === 'post-ayah') {
+      const msg = await postDailyFromChat({ canManage: true, ownerId: req.user.id, channel: 'web', chatId: req.user.id });
+      return res.json({ ok: true, message: msg });
+    }
+    if (action === 'post-hadith') {
+      const slot = slotForNow();
+      const out = await runHadithPost(slot, true);
+      if (!out) return res.json({ ok: false, message: 'The hadith post is not configured on this deployment.' });
+      if (out.skipped) return res.json({ ok: false, message: 'Skipped: ' + out.skipped });
+      if (out.error) return res.json({ ok: false, message: 'Failed: ' + out.error });
+      const fb = out.facebook && out.facebook.url ? 'Facebook: ' + out.facebook.url : (out.facebook && out.facebook.error ? 'Facebook failed: ' + out.facebook.error : '');
+      return res.json({ ok: Boolean(out.ok), message: ['Published the hadith (' + (out.ref || '') + ').', fb].filter(Boolean).join('\n') });
+    }
+    if (action === 'comments') {
+      const out = await collectComments(6);
+      return res.json({ ok: true, message: (out && out.summary) || ('No comments to read (' + ((out && out.items && out.items.length) || 0) + ').') });
+    }
+    if (action === 'check') {
+      const slot = slotForNow();
+      const last = await readDailyLast();
+      return res.json({ ok: true, message: (last.slots[slot] ? 'The ' + slot + ' slot is already posted for ' + last.date + '.' : 'The ' + slot + ' slot is open for ' + last.date + '.') });
+    }
+    return res.status(400).json({ error: 'unknown action' });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 240) }); }
+});
+
 api.get('/documents', async (req, res) => {
   try {
     const rows = await workspace.list({ ownerId: req.user.id, q: req.query.q, kind: req.query.kind, limit: req.query.limit });

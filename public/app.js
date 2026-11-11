@@ -1506,3 +1506,25 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) { toast(e.message); }
   };
 });
+
+// Quick actions: each button is one real call, and the answer is what the server said, never
+// a guess about what probably happened.
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-quick]');
+  if (!btn) return;
+  const action = btn.dataset.quick;
+  const status = $('#quickStatus');
+  const label = btn.textContent;
+  btn.disabled = true;
+  if (status) status.textContent = 'Working…';
+  try {
+    const d = await api('/quick', { method: 'POST', body: { action } });
+    if (status) status.textContent = d.message || (d.ok ? 'Done.' : 'Nothing changed.');
+    if (action === 'post-ayah' || action === 'post-hadith') loadToday();
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+});

@@ -311,6 +311,15 @@
     <section id="view-today" class="view hidden">
       <h1>Today <button class="btn ghost small" id="todayRefresh" style="float:right">Refresh</button></h1>
       <p class="muted">The facts, not a summary: reminders, unread mail, what has been posted and anything waiting for your yes.</p>
+      <div class="card">
+        <div class="row-between"><strong>Quick actions</strong><span class="muted" id="quickStatus"></span></div>
+        <div class="quickrow">
+          <button class="btn" data-quick="post-ayah">Post today's ayah</button>
+          <button class="btn" data-quick="post-hadith">Post today's hadith</button>
+          <button class="btn ghost" data-quick="comments">Read comments</button>
+          <button class="btn ghost" data-quick="check">Is today posted?</button>
+        </div>
+      </div>
       <div class="card"><pre id="todayText" style="white-space:pre-wrap;margin:0;font:inherit">Loading…</pre></div>
       <div class="card">
         <div class="row-between"><strong>Recent documents</strong><button class="btn ghost small" data-goto="documents">All documents →</button></div>

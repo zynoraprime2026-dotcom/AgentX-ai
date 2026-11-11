@@ -278,3 +278,8 @@ input[type=range] { padding: 0; accent-color: var(--accent); }
 .docrow .muted { flex: 1 1 auto; font-size: 13px; }
 .docrow button.btn.ghost.small { flex: 0 0 auto; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+
+/* Quick actions: the two daily jobs, one tap each. */
+.quickrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.quickrow .btn { flex: 0 0 auto; }
+#quickStatus { font-size: 13px; }
