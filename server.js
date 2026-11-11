@@ -1500,10 +1500,7 @@ async function runTool(name, args, ctx) {
           question: args.question,
           maxQueries: depth + 1,
           maxPages: depth + 1,
-          search: async (q) => {
-            const r = await web.webSearch(q, { limit: 5 });
-            return (r && (r.results || r)) || [];
-          },
+          search: (q) => researchSearch(q),
           readPage: async (url) => web.readPage(url),
           ask: async (prompt) => {
             const said = await providers.chat({
@@ -2057,6 +2054,19 @@ async function ownerDisplayName() {
 const workspace = require('./lib/workspace');
 const research = require('./lib/research');
 
+
+
+// Research needs result objects, not the rendered text the chat tool replies with, so it asks
+// the search lanes directly and moves on when one is blocked.
+async function researchSearch(q) {
+  for (const lane of [web.duckduckgo, web.news, web.wikipedia]) {
+    try {
+      const rows = await lane(q);
+      if (Array.isArray(rows) && rows.length) return rows;
+    } catch (e) { /* the next lane gets a turn */ }
+  }
+  return [];
+}
 
 // Art direction in one place: a style, a shape, and the rule that a dawah picture carries no
 // human figure. The model describes the picture; this decides how it is asked for.
@@ -4221,7 +4231,7 @@ api.post('/research', async (req, res) => {
       question,
       maxQueries: depth + 1,
       maxPages: depth + 1,
-      search: async (q) => { const r = await web.webSearch(q, { limit: 5 }); return (r && (r.results || r)) || []; },
+      search: (q) => researchSearch(q),
       readPage: async (url) => web.readPage(url),
       ask: async (prompt) => {
         const said = await providers.chat({
