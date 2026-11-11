@@ -1110,6 +1110,47 @@ const DEV_TOOLS = [
       parameters: { type: 'object', properties: { limit: { type: 'number' }, text: { type: 'string' } } } } }
 ];
 
+const WORK_TOOLS = [
+  { type: 'function', function: {
+      name: 'doc_save',
+      description: 'Save or update a document in the workspace, so it survives the chat. Use it whenever the owner asks for a document, brief, proposal, letter or notes. Pass id to update the same document instead of creating a second copy.',
+      parameters: { type: 'object', properties: {
+        title: { type: 'string' },
+        body: { type: 'string', description: 'the full text of the document' },
+        kind: { type: 'string', enum: ['note', 'document', 'research', 'brief', 'proposal', 'list'] },
+        tags: { type: 'array', items: { type: 'string' } },
+        id: { type: 'string', description: 'existing document id to update' }
+      }, required: ['title', 'body'] } } },
+  { type: 'function', function: {
+      name: 'doc_list',
+      description: 'List the workspace documents, newest first. Pass q to search titles and bodies, or kind to filter.',
+      parameters: { type: 'object', properties: { q: { type: 'string' }, kind: { type: 'string' }, limit: { type: 'number' } } } } },
+  { type: 'function', function: {
+      name: 'doc_read',
+      description: 'Read one document in full by id, or by a title fragment.',
+      parameters: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' } } } } },
+  { type: 'function', function: {
+      name: 'doc_append',
+      description: 'Add more text to an existing document instead of rewriting the whole thing.',
+      parameters: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, text: { type: 'string' } }, required: ['text'] } } },
+  { type: 'function', function: {
+      name: 'research_note',
+      description: 'Save research as a document with its sources. Use it after you have looked something up on the web: the findings plus every link you actually read, so the answer does not vanish with the chat.',
+      parameters: { type: 'object', properties: {
+        question: { type: 'string' },
+        findings: { type: 'string' },
+        sources: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' } } } }
+      }, required: ['question', 'findings'] } } },
+  { type: 'function', function: {
+      name: 'office_today',
+      description: 'The one-screen answer to "what does today look like?": open and due reminders, unread email count, what has been posted today, anything waiting for a yes, and the most recent documents. Read-only.',
+      parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: {
+      name: 'project_check',
+      description: 'Check whether a project is ready to deploy: reads the repo tree and reports which essential files exist (index.html, styles, script, manifest, service worker, README) and what is missing. Reads only, changes nothing.',
+      parameters: { type: 'object', properties: { repo: { type: 'string' }, kind: { type: 'string', enum: ['webapp', 'page', 'api'] } }, required: ['repo'] } } },
+];
+
 const WEB_TOOLS = [
   { type: 'function', function: {
       name: 'web_search',
@@ -1403,6 +1444,69 @@ async function runTool(name, args, ctx) {
         try { ig.setIgToken((await db.getSocial('meta_ig_token')) || ''); } catch (e) {}
         const out = await ig.publish({ account: args.account, imageUrl: args.imageUrl, caption: args.caption });
         return 'Published to ' + out.account + (out.permalink ? ': ' + out.permalink : '');
+      }
+      case 'doc_save': {
+        if (!ctx) return 'No chat context available.';
+        const d = await workspace.save({
+          ownerId: ctx.ownerId, id: args.id, title: args.title, body: args.body,
+          kind: args.kind, tags: args.tags
+        });
+        return 'Saved "' + d.title + '" (' + d.kind + ', version ' + d.version + ', ' + String(d.body).length + ' characters, id ' + d.id + '). It is in the workspace now, not just this chat.';
+      }
+      case 'doc_list': {
+        if (!ctx) return 'No chat context available.';
+        const rows = await workspace.list({ ownerId: ctx.ownerId, q: args.q, kind: args.kind, limit: args.limit });
+        if (!rows.length) return 'No documents match that yet. I can save one for you.';
+        return 'Documents (' + rows.length + '):\n' + rows.map((d) => '- ' + d.title + ' [' + d.kind + ', ' + String(d.updatedAt || d.createdAt).slice(0, 10) + ', id ' + d.id + ']').join('\n');
+      }
+      case 'doc_read': {
+        if (!ctx) return 'No chat context available.';
+        const d = await workspace.read({ ownerId: ctx.ownerId, id: args.id, title: args.title });
+        if (!d) return 'No document matched that. Use doc_list to see what is there.';
+        return '*' + d.title + '* (' + d.kind + ', version ' + d.version + ', updated ' + String(d.updatedAt || d.createdAt).slice(0, 16).replace('T', ' ') + ')\n\n'
+          + String(d.body).slice(0, 6000)
+          + (d.sources && d.sources.length ? '\n\nSources:\n' + d.sources.map((x) => '- ' + (x.title || x.url) + ' — ' + x.url).join('\n') : '');
+      }
+      case 'doc_append': {
+        if (!ctx) return 'No chat context available.';
+        const d = await workspace.append({ ownerId: ctx.ownerId, id: args.id, title: args.title, text: args.text });
+        return 'Added to "' + d.title + '" (now version ' + d.version + ').';
+      }
+      case 'research_note': {
+        if (!ctx) return 'No chat context available.';
+        const d = await workspace.research({ ownerId: ctx.ownerId, question: args.question, findings: args.findings, sources: args.sources });
+        return 'Saved as a research document: "' + d.title + '" with ' + d.sources.length + ' source' + (d.sources.length === 1 ? '' : 's') + ' (id ' + d.id + ').';
+      }
+      case 'office_today': {
+        if (!ctx) return 'No chat context available.';
+        let unread = 0;
+        try {
+          const inbox = require('./lib/inbox');
+          const res = await inbox.recent(25);
+          const rows = (res && (res.messages || res)) || [];
+          unread = rows.filter((m) => m && m.unread).length;
+        } catch (e) { unread = 0; }
+        const today = await dashboardToday(ctx.ownerId);
+        const view = await workspace.officeToday({ ownerId: ctx.ownerId, unread, reminders: today.reminders, lastPost: today.lastPost, pending: today.pending });
+        return formatOffice(view);
+      }
+      case 'project_check': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const repo = String(args.repo || devtools.REPO);
+        const kind = ['webapp', 'page', 'api'].includes(String(args.kind)) ? String(args.kind) : 'webapp';
+        const need = kind === 'api'
+          ? ['README.md', 'api/index.js']
+          : (kind === 'page' ? ['README.md', 'index.html', 'styles.css'] : ['README.md', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'sw.js']);
+        const found = [];
+        const missing = [];
+        for (const f of need) {
+          try { const t = await devtools.readFileIn(repo, f); found.push(f + ' (' + String(t || '').length + ' chars)'); }
+          catch (e) { missing.push(f); }
+        }
+        return 'Project check for ' + repo + ' (' + kind + '): ' + found.length + ' of ' + need.length + ' essential files present.'
+          + (found.length ? '\nFound: ' + found.join(', ') : '')
+          + (missing.length ? '\nMissing: ' + missing.join(', ') : '')
+          + (missing.length ? '\nIt is not ready to deploy until those exist.' : '\nEverything it needs is there. Deploying is still the owner\'s step.');
       }
       case 'github_write_file': {
         if (!(ctx && ctx.canManage)) return 'Not available here.';
@@ -1841,7 +1945,7 @@ const SOCIAL_TOOLS = [
       parameters: { type: 'object', properties: { page: { type: 'string' } } } } }
 ];
 
-const TOOLSETS = { ilm: TOOLS, shop: SHOP_TOOLS, profile: PROFILE_TOOLS, studio: STUDIO_TOOLS, turath: TURATH_TOOLS, web: WEB_TOOLS, dev: DEV_TOOLS, email: EMAIL_TOOLS, manage: MANAGE_TOOLS, social: SOCIAL_TOOLS };
+const TOOLSETS = { work: WORK_TOOLS, ilm: TOOLS, shop: SHOP_TOOLS, profile: PROFILE_TOOLS, studio: STUDIO_TOOLS, turath: TURATH_TOOLS, web: WEB_TOOLS, dev: DEV_TOOLS, email: EMAIL_TOOLS, manage: MANAGE_TOOLS, social: SOCIAL_TOOLS };
 
 function inferToolsets(agent) {
   // Name and description only: a helpdesk prompt names every feature, so reading
@@ -1869,7 +1973,7 @@ function toolsFor(agent, ctx) {
   // never write to an address they name or commit to his account. His chat is the one
   // place the number IS the authentication.
   const ownerKeys = keys.slice();
-  for (const extra of ['email', 'dev', 'social']) if (!ownerKeys.includes(extra)) ownerKeys.push(extra);
+  for (const extra of ['work', 'email', 'dev', 'social']) if (!ownerKeys.includes(extra)) ownerKeys.push(extra);
   return collectTools(ownerKeys);
 }
 
@@ -1894,6 +1998,8 @@ async function ownerDisplayName() {
   } catch (e) { _ownerName = ''; }
   return _ownerName;
 }
+
+const workspace = require('./lib/workspace');
 
 async function groqAsk(agent, history, ctx) {
   const st = await db.getSettings();
@@ -1926,9 +2032,14 @@ async function groqAsk(agent, history, ctx) {
   const OWNER_RULE = ctx && ctx.canManage
     ? '\n\nWHO YOU ARE TALKING TO: this is the owner of this workspace' + (ctx.ownerName ? ', ' + String(ctx.ownerName).split(' ')[0] : '') + '. Speak to him as the owner, not as a customer: do not introduce yourself, do not ask his name, and never treat him as a first-time visitor. He can ask for posts, deploys, settings and reports; do them when he asks.'
     : '';
+  const hasWorkTools = allTools.some(t => t && t.function && /^(doc_|research_note$|office_today$|project_check$)/.test(t.function.name));
+  // A document the owner asked for must land in the workspace, not scroll away in the chat.
+  const DOCS_RULE = '\n\nWORKSPACE: when the owner asks for a document, brief, proposal, letter, plan or notes, write it with doc_save, then say what you saved and its title. Use doc_list and doc_read to find earlier work instead of asking the owner to paste it again, and doc_append to add to a document rather than creating a near-duplicate. Never claim a document exists unless doc_save returned an id.';
+  const RESEARCH_RULE = '\n\nRESEARCH: when a question needs looking up, search, read the pages, then save it with research_note listing every link you actually opened. In the reply, state the finding and name the source. A research note without a source is a guess wearing a suit: if you could not verify it, say so.';
+  const OFFICE_RULE = '\n\nOFFICE: "what does today look like", "what is on my plate", "anything waiting on me" are answered with office_today, which reads reminders, unread mail, what was posted and what is staged. Report it as it is: never add a meeting, an email or a reminder the tool did not return.';
   const hasDevTools = allTools.some(t => t && t.function && /^github_|^render_/.test(t.function.name));
   const DEV_RULE = '\n\nCODE AND DEPLOY ACCESS: you can read any repository, the commit log, the deploy status and production logs, and you can build: project_scaffold creates a new repository with a working starter, github_write_file commits a file. Both are staged and only happen after the owner says yes in this chat, so describe the change plainly first, then let them answer. You cannot deploy, restart a service or change build settings: when a deploy is needed, say exactly what to deploy and let the owner do it. Diagnose from evidence: read the file or the log line before naming a cause, and never claim a commit, a project or a deploy that a tool did not confirm.';
-  const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') + OWNER_RULE + (hasIlmTools ? REFERENCE_RULE : '') + (hasWebTools ? WEB_RULE : '') + (hasDevTools ? DEV_RULE : '') + (hasEmailTools ? EMAIL_RULE : '') }, ...history];
+  const messages = [{ role: 'system', content: agent.systemPrompt + (extras ? '\n\n' + extras : '') + OWNER_RULE + (hasIlmTools ? REFERENCE_RULE : '') + (hasWebTools ? WEB_RULE : '') + (hasDevTools ? DEV_RULE : '') + (hasWorkTools ? DOCS_RULE + RESEARCH_RULE + OFFICE_RULE : '') + (hasEmailTools ? EMAIL_RULE : '') }, ...history];
   const ilmKey = await getIlmKey();
   // A greeting cannot need a lookup, and the schemas cost tokens on every round.
   const lastSaid = String((history[history.length - 1] || {}).content || '').trim();
@@ -3976,6 +4087,51 @@ api.all('/admin/hadith-post', async (req, res) => {
 
 // What each slot last did, including the failures. Without this, "did today go out?" was
 // a question only Facebook could answer.
+// Documents as an HTTP surface, so the dashboard and any script see the same workspace the
+// chat writes into. Every route is scoped to the signed-in user: a document is private.
+api.get('/documents', async (req, res) => {
+  try {
+    const rows = await workspace.list({ ownerId: req.user.id, q: req.query.q, kind: req.query.kind, limit: req.query.limit });
+    return res.json({ ok: true, count: rows.length, documents: rows.map((d) => ({ id: d.id, title: d.title, kind: d.kind, tags: d.tags, updatedAt: d.updatedAt || d.createdAt, chars: String(d.body || '').length })) });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 200) }); }
+});
+
+api.get('/documents/:id', async (req, res) => {
+  try {
+    const d = await workspace.read({ ownerId: req.user.id, id: req.params.id });
+    if (!d) return res.status(404).json({ error: 'no such document' });
+    return res.json({ ok: true, document: d });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 200) }); }
+});
+
+api.post('/documents', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (b.action === 'delete') {
+      const gone = await workspace.remove({ ownerId: req.user.id, id: b.id });
+      return gone ? res.json({ ok: true, deleted: b.id }) : res.status(404).json({ error: 'no such document' });
+    }
+    const d = await workspace.save({ ownerId: req.user.id, id: b.id, title: b.title, body: b.body, kind: b.kind, tags: b.tags, sources: b.sources });
+    return res.json({ ok: true, id: d.id, title: d.title, kind: d.kind, version: d.version });
+  } catch (e) { return res.status(400).json({ error: String((e && e.message) || e).slice(0, 200) }); }
+});
+
+// The office view for the dashboard: the same facts the chat reports, no model involved.
+api.get('/office', async (req, res) => {
+  try {
+    const today = await dashboardToday(req.user.id);
+    let unread = 0;
+    try {
+      const inbox = require('./lib/inbox');
+      const rows = await inbox.recent(25);
+      const list = Array.isArray(rows) ? rows : ((rows && rows.messages) || []);
+      unread = list.filter((m) => m && m.unread).length;
+    } catch (e) { unread = 0; }
+    const view = await workspace.officeToday({ ownerId: req.user.id, unread, reminders: today.reminders, lastPost: today.lastPost, pending: today.pending });
+    return res.json({ ok: true, ...view, text: formatOffice(view) });
+  } catch (e) { return res.status(500).json({ error: String((e && e.message) || e).slice(0, 200) }); }
+});
+
 api.get('/admin/daily-last', async (req, res) => {
   if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder only' });
   const out = {};
@@ -4340,6 +4496,57 @@ function starterFiles(name, description, shape) {
     files['sw.js'] = "const CACHE = 'app-v1';\nself.addEventListener('install', (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/', 'styles.css', 'app.js']))));\nself.addEventListener('fetch', (e) => {\n  if (e.request.method !== 'GET') return;\n  e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request)));\n});\n";
   }
   return files;
+}
+
+
+// What has actually been published, read straight from the claims the poster writes.
+async function readDailyLast() {
+  const out = { date: new Date().toISOString().slice(0, 10), slots: {} };
+  for (const slot of ['morning', 'evening', 'hadith']) {
+    try {
+      const raw = await db.getSocial(slot === 'hadith' ? 'hadith_last' : 'daily_last_' + slot);
+      const rec = raw ? JSON.parse(raw) : null;
+      if (rec && rec.date) out.slots[slot] = rec;
+    } catch (e) { /* an unreadable claim is reported by the absence of the slot */ }
+  }
+  return out;
+}
+
+// The facts behind office_today, gathered from what the app already knows. Nothing here is
+// generated: a "today" screen that guesses is worse than no screen at all.
+async function dashboardToday(ownerId) {
+  const out = { reminders: [], lastPost: null, pending: [] };
+  try {
+    const rows = await suite.docs.list('reminders', {});
+    out.reminders = rows.filter((r) => r && r.status === 'pending');
+  } catch (e) { out.reminders = []; }
+  try {
+    const last = await readDailyLast();
+    out.lastPost = { date: last.date, slots: Object.keys(last.slots || {}) };
+  } catch (e) { out.lastPost = null; }
+  try {
+    const gh = await getPendingGithub();
+    if (gh && gh.kind) out.pending.push('GitHub: ' + gh.kind + ' (' + (gh.repo || gh.name || '') + ')');
+  } catch (e) { /* none */ }
+  try {
+    const pa = await getPendingAction();
+    if (pa && (pa.kind || pa.page)) out.pending.push('Page: ' + (pa.kind || 'change') + ' on ' + (pa.page || 'the Page'));
+  } catch (e) { /* none */ }
+  return out;
+}
+
+function formatOffice(v) {
+  const lines = ['*Today, ' + v.date + '*'];
+  lines.push('Reminders: ' + v.reminders.open + ' open' + (v.reminders.dueNow ? ', ' + v.reminders.dueNow + ' due now' : ''));
+  v.reminders.next.forEach((r) => lines.push('  · ' + r.text + (r.due ? ' (' + String(r.due).slice(0, 10) + ')' : '')));
+  lines.push('Email: ' + (v.email.unread ? v.email.unread + ' unread' : 'nothing unread'));
+  if (v.posting) lines.push('Posting: ' + v.posting.date + ' — ' + (v.posting.slots || []).join(', '));
+  lines.push(v.pendingActions.length ? 'Waiting on you: ' + v.pendingActions.join('; ') : 'Waiting on you: nothing');
+  if (v.documents.length) {
+    lines.push('Recent documents:');
+    v.documents.forEach((d) => lines.push('  · ' + d.title + ' [' + d.kind + ']'));
+  }
+  return lines.join('\n');
 }
 
 async function getPendingGithub() {
