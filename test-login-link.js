@@ -5,7 +5,7 @@ let pass = 0, fail = 0;
 const ok = (n, c) => { if (c) pass++; else { fail++; console.log('FAIL:', n); } };
 const srv = fs.readFileSync(__dirname + '/server.js', 'utf8');
 const mint = srv.slice(srv.indexOf("api.post('/admin/login-link'"), srv.indexOf("api.get('/auth/link'"));
-const use = srv.slice(srv.indexOf("api.get('/auth/link'"), srv.indexOf("api.get('/auth/link'") + 2200);
+const use = srv.slice(srv.indexOf('async function completeLoginLink'), srv.indexOf("api.post('/auth/recover'"));
 
 ok('minting needs the admin key', /adminKeyOk\(req\)/.test(mint) && /403/.test(mint));
 ok('minting refuses an unknown account', /no account with that email/.test(mint));
