@@ -1158,6 +1158,23 @@ const WORK_TOOLS = [
         noPeople: { type: 'boolean' }
       }, required: ['subject'] } } },
   { type: 'function', function: {
+      name: 'make_video',
+      description: 'Render a short video from a picture with Studio. Give a public image URL and a caption line; returns the finished video URL, which can then be posted to a Page. Costs Studio credits and takes a while, so confirm the idea with the owner before rendering.',
+      parameters: { type: 'object', properties: {
+        imageUrl: { type: 'string', description: 'public https image URL to animate' },
+        seconds: { type: 'number' },
+        note: { type: 'string', description: 'what it is for' }
+      }, required: ['imageUrl'] } } },
+  { type: 'function', function: {
+      name: 'post_video',
+      description: 'Post a video to one of the owner Pages (and to Instagram as a reel when that Page has an account). The video must already be at a public https URL. This is staged: it publishes only after the owner says yes in this chat.',
+      parameters: { type: 'object', properties: {
+        videoUrl: { type: 'string' },
+        page: { type: 'string', description: 'Page name or id; the scheduled page when omitted' },
+        caption: { type: 'string' },
+        instagram: { type: 'boolean', description: 'also publish as a reel when the Page has an Instagram account' }
+      }, required: ['videoUrl'] } } },
+  { type: 'function', function: {
       name: 'office_today',
       description: 'The one-screen answer to "what does today look like?": open and due reminders, unread email count, what has been posted today, anything waiting for a yes, and the most recent documents. Read-only.',
       parameters: { type: 'object', properties: {} } } },
@@ -1528,6 +1545,33 @@ async function runTool(name, args, ctx) {
         if (!url) return 'The image service answered but returned no picture. Try again, or describe it differently.';
         const doc = await workspace.save({ ownerId: ctx.ownerId, kind: 'artwork', title: (args.subject || 'Artwork').slice(0, 90), body: url + '\n\n' + shot.prompt, tags: ['art', shot.style] });
         return 'Here it is. Saved in Documents as "' + doc.title + '".\n' + url;
+      }
+      case 'make_video': {
+        if (!(ctx && ctx.canManage)) return 'Not available here.';
+        const img = String(args.imageUrl || '').trim();
+        if (!/^https?:\/\//i.test(img)) return 'make_video needs a public https image URL.';
+        const seconds = Math.min(Math.max(Number(args.seconds) || 6, 3), 20);
+        const raw = await studioCall('/v1/video/from-image', { image_url: img, seconds, ...(args.note ? { note: String(args.note).slice(0, 120) } : {}) });
+        let out = {};
+        try { out = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { out = {}; }
+        const url = out.video_url || out.url || out.videoUrl || '';
+        if (!url) return 'Studio answered but returned no video: ' + String(raw).slice(0, 220);
+        return 'Rendered a ' + seconds + 's clip.\n' + url + '\nSay the word and I will post it.';
+      }
+      case 'post_video': {
+        if (!(ctx && ctx.canManage)) return 'Posting is the owner\'s job.';
+        const url = String(args.videoUrl || '').trim();
+        if (!/^https?:\/\//i.test(url)) return 'post_video needs a public https video URL.';
+        const page = await social.resolvePage(args.page || '');
+        const caption = String(args.caption || '').slice(0, 1200);
+        await setPendingAction({
+          kind: 'page_video', page: page.name, pageId: page.id, token: page.token,
+          videoUrl: url, caption, instagram: args.instagram !== false,
+          at: new Date().toISOString()
+        });
+        return 'I will post this video to ' + page.name + (caption ? ' with the caption below' : '') + ':\n' + url
+          + (caption ? '\n\n' + caption : '')
+          + '\n\nReply yes to publish it, or no to drop it.';
       }
       case 'office_today': {
         if (!ctx) return 'No chat context available.';
@@ -4858,6 +4902,24 @@ async function postActionFromChat(verb, arg) {
       return 'Left it alone. Nothing changed on ' + (pending.page || 'the Page') + '.';
     }
     try {
+      if (pending.kind === 'page_video') {
+        // Facebook takes the file by URL; Instagram takes the same public URL as a reel.
+        const done = await social.uploadPageVideo({ id: pending.pageId, name: pending.page, token: pending.token }, pending.token, {
+          fileUrl: pending.videoUrl, description: pending.caption
+        });
+        let ig = '';
+        if (pending.instagram) {
+          try {
+            const acct = await social.resolvePage(pending.page).then((pg) => (pg && pg.instagram) || null).catch(() => null);
+            if (acct && acct.id) {
+              const out = await require('./lib/instagram').publish({ account: acct, caption: pending.caption, videoUrl: pending.videoUrl, isReel: true });
+              ig = out && out.id ? '\nInstagram reel: ' + out.id : '';
+            }
+          } catch (e) { ig = '\nInstagram did not take it: ' + String(e.message || e).slice(0, 140); }
+        }
+        await clearPendingAction();
+        return 'Video posted to ' + done.page + ' (id ' + done.id + ').' + ig;
+      }
       if (pending.kind === 'edit') {
         await social.editPostMessage(pending.postId, pending.newMessage, pending.token);
         await clearPendingAction();
