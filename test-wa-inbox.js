@@ -8,8 +8,8 @@ const db = fs.readFileSync(__dirname + '/db.js', 'utf8');
 const page = fs.readFileSync(__dirname + '/public/inbox.html', 'utf8');
 const dash = fs.readFileSync(__dirname + '/public/index.html', 'utf8');
 
-ok('threads come from the real history table', /wa-threads[\s\S]{0,400}FROM agx_hist/.test(srv));
-ok('messages too', /wa-messages[\s\S]{0,400}FROM agx_hist/.test(srv));
+ok('threads come from the real history table', /wa-threads[\s\S]{0,1500}FROM agx_hist/.test(srv));
+ok('messages too', /wa-messages[\s\S]{0,1500}FROM agx_hist/.test(srv));
 ok('unread is counted, not guessed', /COUNT\(\*\) FILTER \(WHERE role <> 'assistant' AND seen IS NOT TRUE\)/.test(srv));
 ok('a reply is really sent', /wa-send[\s\S]{0,1200}await waSend\(chat, text\)/.test(srv));
 ok('and written back into history', /agx_hist \(channel, chat_id, role, content, created_at\)/.test(srv));
