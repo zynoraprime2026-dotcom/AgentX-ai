@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WhatsApp inbox · AgentX</title>
+<style>
+  :root { --bg:#0E2A2B; --panel:#123638; --gold:#C9A96A; --ink:#F3ECDA; --muted:#8FB3B0; --line:#1E4A4C; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--line); }
+  header h1 { flex:1; font-size:15px; margin:0; letter-spacing:.3px; }
+  header a { color:var(--gold); text-decoration:none; font-size:13px; }
+  .wrap { flex:1; display:flex; min-height:0; }
+  #threads { width:38%; max-width:360px; overflow-y:auto; border-right:1px solid var(--line); }
+  @media (max-width:720px) { .wrap { flex-direction:column; } #threads { width:100%; max-width:none; height:40%; border-right:0; border-bottom:1px solid var(--line); } }
+  .thread { padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .thread.active { background:var(--panel); }
+  .thread .who { font-size:13px; font-weight:600; display:flex; justify-content:space-between; gap:8px; }
+  .thread .when { color:var(--muted); font-weight:400; font-size:11px; }
+  .badge { background:#25D366; color:#08301F; border-radius:10px; font-size:10.5px; font-weight:800; padding:1px 6px; margin-left:6px; }
+  .thread .snip { color:var(--muted); font-size:12px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #pane { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #msgs { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  .bubble { max-width:78%; padding:8px 11px; border-radius:12px; font-size:13.5px; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
+  .them { background:var(--panel); align-self:flex-start; border-bottom-left-radius:3px; }
+  .agent { background:#1D4B3B; align-self:flex-end; border-bottom-right-radius:3px; }
+  .at { font-size:10px; color:var(--muted); margin-top:4px; }
+  #composer { display:flex; gap:8px; padding:10px; border-top:1px solid var(--line); }
+  #composer input { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--ink); border-radius:9px; padding:11px 12px; font-size:14px; }
+  #composer button { background:var(--gold); color:#10201F; border:0; border-radius:9px; padding:0 16px; font-weight:700; font-size:13px; }
+  #composer button:disabled { opacity:.5; }
+  .empty { margin:auto; text-align:center; color:var(--muted); font-size:13px; padding:24px; line-height:1.6; }
+  .note { padding:8px 14px; font-size:12px; color:var(--gold); background:#173F41; border-bottom:1px solid var(--line); display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WhatsApp inbox</h1>
+  <a href="/">back to agents</a>
+</header>
+<div class="note" id="note"></div>
+<div class="wrap">
+  <div id="threads"><div class="empty" id="threads-empty">Loading conversations…</div></div>
+  <div id="pane">
+    <div id="msgs"><div class="empty">Pick a conversation on the left.</div></div>
+    <div id="composer" style="display:none">
+      <input id="text" placeholder="Reply as the business number" autocomplete="off">
+      <button id="send">Send</button>
+    </div>
+  </div>
+</div>
+<script>
+// Everything here is real: threads and messages come from the same history the agent reads,
+// and a reply goes out through the Cloud API and is written back into that history.
+let current = '';
+const $ = (id) => document.getElementById(id);
+const esc = (t) => String(t == null ? '' : t);
+
+function when(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const now = Date.now();
+  const mins = Math.round((now - d.getTime()) / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return mins + 'm';
+  if (mins < 1440) return Math.round(mins / 60) + 'h';
+  return d.toLocaleDateString();
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401) { location.href = '/'; throw new Error('sign in again'); }
+  if (!r.ok) throw new Error(d.error || ('http ' + r.status));
+  return d;
+}
+
+async function loadThreads() {
+  let d;
+  try { d = await api('/api/admin/wa-threads'); }
+  catch (e) { $('threads').innerHTML = '<div class="empty"></div>'; $('threads').firstChild.textContent = String(e.message); return; }
+  if (!d.connected) { $('note').style.display = 'block'; $('note').textContent = 'This deployment has no WhatsApp credentials yet, so replies cannot be sent.'; }
+  const box = $('threads');
+  box.textContent = '';
+  const threads = d.threads || [];
+  if (!threads.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'No WhatsApp conversation yet. When someone messages the business number, the thread appears here with the agent’s replies.';
+    box.appendChild(e);
+    return;
+  }
+  threads.forEach((t) => {
+    const row = document.createElement('div');
+    row.className = 'thread' + (t.chatId === current ? ' active' : '');
+    const who = document.createElement('div'); who.className = 'who';
+    const name = document.createElement('span');
+    name.textContent = t.chatId;
+    if (t.unread > 0) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = String(t.unread); name.appendChild(b); }
+    const w = document.createElement('span'); w.className = 'when'; w.textContent = when(t.lastAt);
+    who.appendChild(name); who.appendChild(w);
+    const snip = document.createElement('div'); snip.className = 'snip'; snip.textContent = (t.lastRole === 'assistant' ? 'agent: ' : '') + t.lastMessage;
+    row.appendChild(who); row.appendChild(snip);
+    row.onclick = () => openThread(t.chatId);
+    box.appendChild(row);
+  });
+}
+
+async function openThread(chat) {
+  current = chat;
+  loadThreads();
+  const d = await api('/api/admin/wa-messages?chat=' + encodeURIComponent(chat)).catch((e) => ({ messages: [], error: e.message }));
+  const box = $('msgs');
+  box.textContent = '';
+  if (d.error) { const e = document.createElement('div'); e.className = 'empty'; e.textContent = d.error; box.appendChild(e); }
+  (d.messages || []).forEach((m) => {
+    const b = document.createElement('div');
+    b.className = 'bubble ' + (m.role === 'agent' ? 'agent' : 'them');
+    b.textContent = m.text;
+    if (m.at) { const t = document.createElement('div'); t.className = 'at'; t.textContent = when(m.at); b.appendChild(t); }
+    box.appendChild(b);
+  });
+  box.scrollTop = box.scrollHeight;
+  $('composer').style.display = 'flex';
+  api('/api/admin/wa-read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat }) }).catch(() => {});
+}
+
+async function send() {
+  const text = $('text').value.trim();
+  if (!text || !current) return;
+  $('send').disabled = true;
+  try {
+    await api('/api/admin/wa-send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat: current, text }) });
+    $('text').value = '';
+    await openThread(current);
+  } catch (e) {
+    $('note').style.display = 'block';
+    $('note').textContent = 'Could not send: ' + e.message;
+  } finally { $('send').disabled = false; }
+}
+
+$('send').onclick = send;
+$('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+loadThreads();
+setInterval(() => { loadThreads(); if (current) api('/api/admin/wa-messages?chat=' + encodeURIComponent(current)).then((d) => { if ((d.messages || []).length !== $('msgs').children.length) openThread(current); }).catch(() => {}); }, 15000);
+</script>
+</body>
+</html>

@@ -68,6 +68,10 @@ async function initPg(ssl) {
     CREATE TABLE IF NOT EXISTS agx_subs_sent (chat_id text PRIMARY KEY, day text);
     CREATE TABLE IF NOT EXISTS agx_hist (id bigserial PRIMARY KEY, channel text, chat_id text, role text, content text);
     CREATE INDEX IF NOT EXISTS agx_hist_chat ON agx_hist (channel, chat_id, id);
+    -- The inbox needs a time per message and a way to say "the owner has read this".
+    -- ALTER ... IF NOT EXISTS keeps the migration safe on every cold start.
+    ALTER TABLE agx_hist ADD COLUMN IF NOT EXISTS created_at text;
+    ALTER TABLE agx_hist ADD COLUMN IF NOT EXISTS seen boolean DEFAULT false;
     CREATE TABLE IF NOT EXISTS agx_workflows (
       id text PRIMARY KEY, name text NOT NULL, enabled boolean DEFAULT true,
       trigger jsonb DEFAULT '{}', steps jsonb DEFAULT '[]', approval boolean DEFAULT false,
@@ -464,7 +468,7 @@ const store = {
     return (all[channel] && all[channel][chatId]) || [];
   },
   async appendHistory(channel, chatId, role, content) {
-    if (pool) { await pool.query('INSERT INTO agx_hist (channel, chat_id, role, content) VALUES ($1,$2,$3,$4)', [channel, String(chatId), role, String(content).slice(0, 6000)]); return; }
+    if (pool) { await pool.query('INSERT INTO agx_hist (channel, chat_id, role, content, created_at) VALUES ($1,$2,$3,$4,$5)', [channel, String(chatId), role, String(content).slice(0, 6000), new Date().toISOString()]); return; }
     const all = readJson(path.join(DATA_DIR, 'histories.json'), {});
     all[channel] = all[channel] || {};
     const arr = all[channel][chatId] = (all[channel][chatId] || []);

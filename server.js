@@ -65,6 +65,7 @@ if (sweepLimits.unref) sweepLimits.unref();
 
 // Serve the dashboard explicitly for '/' (serve-static's directory-index handling has crashed on Vercel).
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/inbox', (req, res) => res.sendFile(path.join(__dirname, 'public', 'inbox.html')));
 app.use(express.static(path.join(__dirname, 'public'), { etag: true, maxAge: 0, setHeaders: (res) => res.set('Cache-Control', 'no-cache') }));
 
 const readJson = db.readJson; const writeJson = db.writeJson;
@@ -3192,6 +3193,85 @@ app.get('/api/admin/ilm-check', async (req, res) => {
     };
   } catch (e) { out.ok = false; out.error = String(e.message).slice(0, 200); }
   res.json(out);
+});
+
+// The delivery log answers "did a webhook arrive"; it does not hold conversations. The
+// messages the agent actually exchanged live in agx_hist, so the inbox reads from there.
+app.get('/api/admin/wa-threads', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  try {
+    const p2 = require('./db').poolRef;
+    if (!p2) return res.json({ threads: [], note: 'Postgres not connected' });
+    const rows = await p2.query(
+      "SELECT chat_id, MAX(id) AS last_id, COUNT(*) AS total, COUNT(*) FILTER (WHERE role <> 'assistant' AND seen IS NOT TRUE) AS unread FROM agx_hist WHERE channel = $1 GROUP BY chat_id ORDER BY last_id DESC LIMIT 40",
+      ['whatsapp']);
+    const list = rows.rows || [];
+    const threads = [];
+    for (const r of list) {
+      const last = await p2.query('SELECT content, role, created_at FROM agx_hist WHERE id = $1', [r.last_id]);
+      const row = (last.rows || [])[0] || {};
+      threads.push({
+        chatId: r.chat_id,
+        total: Number(r.total) || 0,
+        unread: Number(r.unread) || 0,
+        lastMessage: String(row.content || '').slice(0, 120),
+        lastRole: row.role || '',
+        lastAt: row.created_at || null
+      });
+    }
+    res.json({ threads, connected: Boolean(process.env.WHATSAPP_ACCESS_TOKEN) });
+  } catch (e) { res.status(500).json({ error: String(e.message).slice(0, 180) }); }
+});
+
+app.get('/api/admin/wa-messages', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const chat = String(req.query.chat || '').trim();
+  if (!chat) return res.status(400).json({ error: 'chat is required' });
+  try {
+    const p2 = require('./db').poolRef;
+    if (!p2) return res.json({ messages: [] });
+    const rows = await p2.query(
+      'SELECT role, content, created_at FROM agx_hist WHERE channel = $1 AND chat_id = $2 ORDER BY id DESC LIMIT 60',
+      ['whatsapp', chat]);
+    const messages = (rows.rows || []).reverse().map((r) => ({
+      role: r.role === 'assistant' ? 'agent' : 'them',
+      text: String(r.content || ''),
+      at: r.created_at || null
+    }));
+    res.json({ chatId: chat, messages });
+  } catch (e) { res.status(500).json({ error: String(e.message).slice(0, 180) }); }
+});
+
+// Replying from the inbox must land in the same history the agent reads, or the agent
+// answers as if the owner never said anything.
+app.post('/api/admin/wa-send', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const chat = String((req.body || {}).chat || '').trim();
+  const text = String((req.body || {}).text || '').trim();
+  if (!chat) return res.status(400).json({ error: 'chat is required' });
+  if (!text) return res.status(400).json({ error: 'text is required' });
+  if (!WA_PHONE_ID || !WA_TOKEN) return res.status(503).json({ error: 'WhatsApp is not configured on this deployment yet' });
+  try {
+    await waSend(chat, text);
+    const p2 = require('./db').poolRef;
+    if (p2) {
+      await p2.query('INSERT INTO agx_hist (channel, chat_id, role, content, created_at) VALUES ($1,$2,$3,$4,$5)',
+        ['whatsapp', chat, 'assistant', text, new Date().toISOString()]).catch(() => {});
+    }
+    await require('./lib/suite').logEvent({ channel: 'whatsapp', kind: 'wa_out_manual', query: text.slice(0, 120) }).catch(() => {});
+    res.json({ ok: true });
+  } catch (e) { res.status(502).json({ error: String(e.message).slice(0, 180) }); }
+});
+
+app.post('/api/admin/wa-read', async (req, res) => {
+  if (!isFounderOrKey(req)) return res.status(403).json({ error: 'founder or admin key required' });
+  const chat = String((req.body || {}).chat || '').trim();
+  if (!chat) return res.status(400).json({ error: 'chat is required' });
+  try {
+    const p2 = require('./db').poolRef;
+    if (p2) await p2.query("UPDATE agx_hist SET seen = true WHERE channel = 'whatsapp' AND chat_id = $1 AND role <> 'assistant'", [chat]).catch(() => {});
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: String(e.message).slice(0, 160) }); }
 });
 
 app.get('/webhook/whatsapp', (req, res) => {
