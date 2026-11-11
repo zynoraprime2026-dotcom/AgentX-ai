@@ -21,7 +21,7 @@ ok('opening one uses its id', /api\('\/documents\/' \+ encodeURIComponent\(id\)\
 ok('deleting asks first', /confirm\('Delete this document\?/.test(js));
 ok('research sources are shown as links', /Sources:<br>/.test(js));
 ok('text is escaped before it reaches the page', /esc\(x\.title\)/.test(js));
-ok('the reader is closable', /id="docClose"/.test(js));
+ok('the reader is closable', /id="docClose"/.test(html) && /\$\('#docClose'\)/.test(js));
 ok('rows share one style', /\.docrow \{/.test(css));
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
