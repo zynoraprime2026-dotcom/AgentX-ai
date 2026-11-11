@@ -1970,6 +1970,10 @@ async function groqAsk(agent, history, ctx) {
       out = await providers.chat({
         key,
         model: agent.model,
+        // The provider defaults to 90s per lane, which is longer than the whole request is
+        // allowed to live: one slow Gemini attempt was enough to kill the reply before any
+        // deadline could help. The lane now gets only what is left of the reply's budget.
+        timeoutMs: Math.max(8000, Math.min(25000, REPLY_DEADLINE - Date.now())),
         messages,
         tools: (toolsOn && !lastRound && allTools.length) ? allTools : null,
         maxTokens: 700,
@@ -2071,7 +2075,16 @@ api.post('/chat/:id', rateLimitUser(20, 60e3, 'chat'), async (req, res) => {
   suite.logEvent({ ...base, kind: 'message', query: lastUser ? String(lastUser.content || '').slice(0, 300) : '' });
   try {
     const ctx = { channel: 'web', chatId: req.user.id, ownerId: req.user.id, canManage: Boolean(req.user.founder), ownerName: req.user.founder ? req.user.name : '' };
-    const out = await groqAsk(a, history, ctx);
+    // A dashboard turn must never end in a platform timeout with nothing to show. If the model
+    // is still thinking at 50s, answer honestly and keep the conversation usable.
+    let answered = false;
+    const out = await Promise.race([
+      groqAsk(a, history, ctx),
+      new Promise((resolve) => setTimeout(() => {
+        answered = true;
+        resolve({ reply: 'That one took longer than the dashboard allows, so I have stopped it rather than leave you guessing. Ask again, or narrow it down and I will answer from what I can reach quickly.', model: 'deadline', timedOut: true });
+      }, 50000))
+    ]);
     if (!out.demo) {
       bumpMessages(a.id);
       suite.logEvent({ ...base, kind: 'reply', latency: Date.now() - started, query: lastUser ? String(lastUser.content || '').slice(0, 300) : '' });
